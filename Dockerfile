@@ -9,25 +9,21 @@ WORKDIR /app
 # The React Router build needs devDependencies (vite, @react-router/dev), so this
 # stage installs everything. NODE_ENV stays unset here on purpose.
 FROM base AS build
-# Limit Node heap to leave headroom for OS + pnpm on memory-constrained build environments.
-ENV NODE_OPTIONS="--max-old-space-size=400"
+ENV NODE_OPTIONS="--max-old-space-size=384"
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY extensions ./extensions
-RUN pnpm install --frozen-lockfile
+# Render Free limits builds to 512 MiB. Keep pnpm fetch/link work serial.
+RUN pnpm config set network-concurrency 1 \
+    && pnpm config set child-concurrency 1 \
+    && pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm run build
-
-# Separate production-only install so the runtime image ships without build tooling.
-FROM base AS deps
-ENV NODE_ENV=production
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY extensions ./extensions
-RUN pnpm install --frozen-lockfile --prod
+RUN pnpm prune --prod
 
 FROM base AS runtime
 ENV NODE_ENV=production
 ENV PORT=3000
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/build ./build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY prisma ./prisma
