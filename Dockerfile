@@ -9,6 +9,8 @@ WORKDIR /app
 # The React Router build needs devDependencies (vite, @react-router/dev), so this
 # stage installs everything. NODE_ENV stays unset here on purpose.
 FROM base AS build
+# Limit Node heap to leave headroom for OS + pnpm on memory-constrained build environments.
+ENV NODE_OPTIONS="--max-old-space-size=400"
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY extensions ./extensions
 RUN pnpm install --frozen-lockfile
