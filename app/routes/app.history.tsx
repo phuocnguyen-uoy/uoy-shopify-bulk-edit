@@ -1,0 +1,168 @@
+import type {
+  ActionFunctionArgs,
+  HeadersFunction,
+  LoaderFunctionArgs,
+} from "react-router";
+import { Form, redirect, useLoaderData, useRouteError } from "react-router";
+import { boundary } from "@shopify/shopify-app-react-router/server";
+
+import db from "../db.server";
+import { executeRun } from "../services/jobs/execute.server";
+import { reconcileRun } from "../services/jobs/reconcile.server";
+import { enqueueRollback } from "../services/tasks/task-service.server";
+import { tenantDb } from "../services/tenant.server";
+import { authenticate } from "../shopify.server";
+
+export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const { session } = await authenticate.admin(request);
+  const scoped = tenantDb(db, session.shop);
+  let runs = await scoped.taskRun.listHistory();
+  const running = runs.filter((run) => run.status === "RUNNING").slice(0, 10);
+  if (running.length > 0) {
+    await Promise.allSettled(
+      running.map((run) => reconcileRun(session.shop, run.id)),
+    );
+    runs = await scoped.taskRun.listHistory();
+  }
+
+  return {
+    runs: runs.map((run) => ({
+      id: run.id,
+      taskId: run.task.id,
+      taskName: run.task.name,
+      kind: run.kind,
+      status: run.status,
+      createdAt: run.createdAt.toISOString(),
+      completedAt: run.completedAt?.toISOString() ?? null,
+      changeCount: run._count.changes,
+      canRevert: run.kind === "APPLY" && run.status === "COMPLETED",
+    })),
+  };
+};
+
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { session } = await authenticate.admin(request);
+  const form = await request.formData();
+  const taskId = String(form.get("taskId") ?? "");
+  const sourceRunId = String(form.get("sourceRunId") ?? "");
+  if (!taskId || !sourceRunId) {
+    throw new Response("Task and source run are required", { status: 422 });
+  }
+  const run = await enqueueRollback(session.shop, taskId, sourceRunId);
+  await executeRun(session.shop, run.id);
+  return redirect("/app/history");
+};
+
+type BadgeTone =
+  | "info"
+  | "success"
+  | "caution"
+  | "critical"
+  | "neutral"
+  | "warning";
+
+const STATUS_TONE: Record<string, BadgeTone> = {
+  COMPLETED: "success",
+  QUEUED: "info",
+  PREPARING: "info",
+  RUNNING: "info",
+  PARTIALLY_FAILED: "caution",
+  FAILED: "critical",
+  CANCELLED: "caution",
+};
+
+function fmtDate(iso: string) {
+  return new Date(iso).toLocaleString(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+const COLS = "2fr 0.8fr 1fr 0.7fr 1.2fr 1.2fr 0.7fr";
+
+export default function TaskHistory() {
+  const { runs } = useLoaderData<typeof loader>();
+
+  return (
+    <s-page heading="Task history" inlineSize="large">
+      <s-button slot="primary-action" href="/app/tasks/new" variant="primary">
+        New bulk edit
+      </s-button>
+      <s-section heading="Bulk edit runs">
+        {runs.length === 0 ? (
+          <s-stack direction="block" gap="base">
+            <s-paragraph>No bulk edits have run yet.</s-paragraph>
+            <s-button href="/app/tasks/new">
+              Create your first bulk edit
+            </s-button>
+          </s-stack>
+        ) : (
+          <div
+            style={{
+              border: "1px solid #d1d1d1",
+              borderRadius: 12,
+              overflow: "hidden",
+            }}
+          >
+            <div style={{ padding: 12, background: "#f7f7f7" }}>
+              <s-grid gridTemplateColumns={COLS} gap="base">
+                <s-text type="strong">Task</s-text>
+                <s-text type="strong">Type</s-text>
+                <s-text type="strong">Status</s-text>
+                <s-text type="strong">Products</s-text>
+                <s-text type="strong">Started</s-text>
+                <s-text type="strong">Completed</s-text>
+                <s-text type="strong">Action</s-text>
+              </s-grid>
+            </div>
+            {runs.map((run) => (
+              <div
+                key={run.id}
+                style={{ padding: 12, borderTop: "1px solid #e3e3e3" }}
+              >
+                <s-grid gridTemplateColumns={COLS} gap="base">
+                  <s-link href={`/app/tasks/${run.taskId}`}>
+                    {run.taskName}
+                  </s-link>
+                  <s-text>
+                    {run.kind === "REVERT" ? "Revert" : "Bulk edit"}
+                  </s-text>
+                  <s-badge tone={STATUS_TONE[run.status] ?? "neutral"}>
+                    {run.status.toLowerCase().replace(/_/g, " ")}
+                  </s-badge>
+                  <s-text>{run.changeCount > 0 ? run.changeCount : "—"}</s-text>
+                  <s-text>{fmtDate(run.createdAt)}</s-text>
+                  <s-text>
+                    {run.completedAt ? fmtDate(run.completedAt) : "—"}
+                  </s-text>
+                  <s-stack direction="inline" gap="small">
+                  {run.canRevert && (
+                    <Form method="post">
+                      <input type="hidden" name="taskId" value={run.taskId} />
+                      <input type="hidden" name="sourceRunId" value={run.id} />
+                      <s-button type="submit" tone="critical">
+                        Revert
+                      </s-button>
+                    </Form>
+                  )}
+                  </s-stack>
+                </s-grid>
+              </div>
+            ))}
+          </div>
+        )}
+      </s-section>
+    </s-page>
+  );
+}
+
+export function ErrorBoundary() {
+  return boundary.error(useRouteError());
+}
+
+export const headers: HeadersFunction = (args) => boundary.headers(args);

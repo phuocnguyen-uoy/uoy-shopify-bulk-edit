@@ -1,0 +1,25 @@
+# Region is ord (Chicago) because the Neon database lives in AWS us-east-2 (Ohio).
+# Moving the app closer to merchants means moving the database too, or every
+# request pays a trans-Pacific round trip per query.
+app = "uoy-bulk-editor"
+primary_region = "ord"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_start_machines = true
+  # Shopify drops a webhook that does not answer within 5 seconds, so the machine
+  # must not be allowed to cold start on a webhook delivery.
+  auto_stop_machines = "off"
+  min_machines_running = 1
+  processes = ["app"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

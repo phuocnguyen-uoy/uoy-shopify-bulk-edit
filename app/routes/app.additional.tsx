@@ -1,6 +1,6 @@
 export default function AdditionalPage() {
   return (
-    <s-page heading="Additional page">
+    <s-page heading="Additional page" inlineSize="large">
       <s-section heading="Multiple pages">
         <s-paragraph>
           The app template comes with an additional page which demonstrates how

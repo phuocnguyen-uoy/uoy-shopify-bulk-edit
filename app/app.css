@@ -1,0 +1,5 @@
+/* Force full-width layout for all Serene pages */
+s-page {
+  --s-page-max-inline-size: none;
+  max-inline-size: none;
+}

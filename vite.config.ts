@@ -37,7 +37,10 @@ if (host === "localhost") {
 
 export default defineConfig({
   server: {
-    allowedHosts: [host],
+    // Shopify CLI 4.x no longer creates a tunnel, so dev runs behind a cloudflared
+    // quick tunnel whose subdomain is random on every start. The leading dot allows
+    // any of them. Dev server only; it has no effect on the production build.
+    allowedHosts: [host, ".trycloudflare.com"],
     cors: {
       preflightContinue: true,
     },

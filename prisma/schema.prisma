@@ -9,26 +9,181 @@ generator client {
 // enough when changing adapters.
 // See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
+// Intentionally no FK to Shop: Shopify session storage persists the OAuth session
+// before afterAuth can upsert the Shop row on first installation. Session.shop is
+// authenticated by Shopify; application data access must still use tenantDb.
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+
+  @@index([shop])
+}
+
+model Shop {
+  domain          String           @id
+  installedAt     DateTime         @default(now())
+  uninstalledAt   DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  tasks           Task[]
+  taskRuns        TaskRun[]
+  taskChanges     TaskChange[]
+  savedTasks      SavedTask[]
+  webhookReceipts WebhookReceipt[]
+}
+
+model Task {
+  id                String        @id @default(cuid())
+  shopDomain        String
+  name              String
+  resourceType      ResourceType
+  filterDefinition  Json
+  actionDefinition  Json
+  status            TaskStatus    @default(DRAFT)
+  selectionMode     SelectionMode @default(FROZEN)
+  frozenResourceIds Json?
+  scheduledAt       DateTime?
+  recurringCron     String?
+  timezone          String        @default("UTC")
+  nextRunAt         DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  shop              Shop          @relation(fields: [shopDomain], references: [domain], onDelete: Cascade)
+  runs              TaskRun[]
+
+  @@unique([shopDomain, id])
+  @@index([shopDomain, status])
+  @@index([shopDomain, nextRunAt])
+}
+
+model TaskRun {
+  id                 String       @id @default(cuid())
+  shopDomain         String
+  taskId             String
+  idempotencyKey     String
+  scheduledFor       DateTime
+  kind               RunKind      @default(APPLY)
+  sourceRunId        String?
+  status             RunStatus    @default(QUEUED)
+  shopifyOperationId String?
+  stats              Json?
+  error              Json?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime     @default(now())
+  shop               Shop         @relation(fields: [shopDomain], references: [domain], onDelete: Cascade)
+  task               Task         @relation(fields: [shopDomain, taskId], references: [shopDomain, id], onDelete: Cascade)
+  changes            TaskChange[]
+
+  @@unique([shopDomain, id])
+  @@unique([shopDomain, idempotencyKey])
+  @@index([shopDomain, status])
+  @@index([shopDomain, taskId])
+  @@index([shopDomain, sourceRunId])
+}
+
+model TaskChange {
+  id             String         @id @default(cuid())
+  shopDomain     String
+  runId          String
+  resourceGid    String
+  resourceType   ResourceType
+  before         Json
+  after          Json
+  conflictStatus ConflictStatus @default(NONE)
+  appliedAt      DateTime?
+  revertedAt     DateTime?
+  createdAt      DateTime       @default(now())
+  shop           Shop           @relation(fields: [shopDomain], references: [domain], onDelete: Cascade)
+  run            TaskRun        @relation(fields: [shopDomain, runId], references: [shopDomain, id], onDelete: Cascade)
+
+  @@unique([runId, resourceGid])
+  @@index([shopDomain, resourceGid])
+}
+
+model SavedTask {
+  id               String       @id @default(cuid())
+  shopDomain       String
+  name             String
+  resourceType     ResourceType
+  filterDefinition Json
+  actionDefinition Json
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  shop             Shop         @relation(fields: [shopDomain], references: [domain], onDelete: Cascade)
+
+  @@index([shopDomain, name])
+}
+
+model WebhookReceipt {
+  id          String   @id @default(cuid())
+  shopDomain  String
+  webhookId   String
+  topic       String
+  processedAt DateTime @default(now())
+  shop        Shop     @relation(fields: [shopDomain], references: [domain], onDelete: Cascade)
+
+  @@unique([shopDomain, webhookId])
+  @@index([shopDomain, processedAt])
+}
+
+enum ResourceType {
+  PRODUCT
+  VARIANT
+  COLLECTION
+}
+
+enum SelectionMode {
+  FROZEN
+  DYNAMIC
+}
+
+enum TaskStatus {
+  DRAFT
+  PREVIEWED
+  SCHEDULED
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum RunKind {
+  APPLY
+  REVERT
+}
+
+enum RunStatus {
+  QUEUED
+  PREPARING
+  RUNNING
+  COMPLETED
+  PARTIALLY_FAILED
+  FAILED
+  CANCELLED
+}
+
+enum ConflictStatus {
+  NONE
+  DETECTED
+  SKIPPED
+  FORCE_APPLIED
 }

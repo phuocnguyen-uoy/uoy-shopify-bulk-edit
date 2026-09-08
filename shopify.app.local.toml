@@ -1,35 +1,27 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "8c011a2792436213134d604517505948"
-name = "UOY Bulk Product Editor"
-application_url = "https://bulk-editor.uoymedia.work"
+name = "UOY Bulk Editor Local"
+application_url = "https://example.com"
 embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-include_config_on_deploy = true
+include_config_on_deploy = false
 
 [webhooks]
 api_version = "2026-07"
 
   [[webhooks.subscriptions]]
-  uri = "/webhooks/app/uninstalled"
-  topics = [ "app/uninstalled" ]
-
-  [[webhooks.subscriptions]]
-  uri = "/webhooks/app/scopes_update"
-  topics = [ "app/scopes_update" ]
-
-  [[webhooks.subscriptions]]
-  uri = "/webhooks/customers/data_request"
+  uri = "https://example.com/webhooks/customers/data_request"
   compliance_topics = [ "customers/data_request" ]
 
   [[webhooks.subscriptions]]
-  uri = "/webhooks/customers/redact"
+  uri = "https://example.com/webhooks/customers/redact"
   compliance_topics = [ "customers/redact" ]
 
   [[webhooks.subscriptions]]
-  uri = "/webhooks/shop/redact"
+  uri = "https://example.com/webhooks/shop/redact"
   compliance_topics = [ "shop/redact" ]
 
 [access_scopes]
@@ -39,4 +31,4 @@ optional_scopes = [ ]
 use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://bulk-editor.uoymedia.work/auth/callback" ]
+redirect_urls = [ "https://example.com/auth/callback" ]
