@@ -1,3 +1,25 @@
+@import "flatpickr/dist/flatpickr.min.css";
+
+/* Flatpickr display input — match Polaris text field style */
+.fpick-display {
+  width: 100%;
+  padding: 6px 12px;
+  border: 1px solid #8c9196;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+  line-height: 1.5;
+  background: #fff;
+  color: #202223;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+.fpick-display:focus {
+  outline: none;
+  border-color: #005bd3;
+  box-shadow: 0 0 0 2px rgba(0, 91, 211, 0.2);
+}
+
 /* Force full-width layout for all Serene pages */
 s-page {
   --s-page-max-inline-size: none;

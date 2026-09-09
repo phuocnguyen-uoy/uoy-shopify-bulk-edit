@@ -12,9 +12,11 @@ import {
   useRouteError,
   useSubmit,
 } from "react-router";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ResourceType } from "@prisma/client";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+
+import { DatePicker } from "../components/DatePicker";
 
 import { compileProductSearch } from "../services/bulk-edit/filter-compiler";
 import { executeRun } from "../services/jobs/execute.server";
@@ -364,7 +366,12 @@ export default function NewTask() {
   const navigation = useNavigation();
   const submit = useSubmit();
   const busy = navigation.state !== "idle";
+  const [pendingIntent, setPendingIntent] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    if (navigation.state === "idle") setPendingIntent(null);
+  }, [navigation.state]);
 
   const [resourceType, setResourceType] = useState<ResourceType>(
     prefill?.resourceType ?? "PRODUCT",
@@ -427,10 +434,13 @@ export default function NewTask() {
   const submitWithIntent = (intent: "preview" | "run" | "create") => {
     const form = formRef.current;
     if (!form) return;
+    setPendingIntent(intent);
     const data = new FormData(form);
     data.set("intent", intent);
     submit(data, { method: "post" });
   };
+
+  const isLoading = (intent: string) => busy && pendingIntent === intent;
 
   const preview = result && "preview" in result ? result.preview : undefined;
   const error = result && "error" in result ? result.error : undefined;
@@ -586,11 +596,9 @@ export default function NewTask() {
                     <s-option value="false">False</s-option>
                   </s-select>
                 ) : filterKind === "date" ? (
-                  <s-text-field
+                  <DatePicker
                     name="filterValue"
                     label="Date"
-                    placeholder="2024-01-15"
-                    details="Format: YYYY-MM-DD"
                     defaultValue={String(prefill?.filter?.value ?? "")}
                   />
                 ) : filterKind === "number" ? (
@@ -829,8 +837,9 @@ export default function NewTask() {
                 type="button"
                 onClick={() => submitWithIntent("preview")}
                 disabled={busy || resourceType !== "PRODUCT" || isPendingVariantAction}
+                loading={isLoading("preview")}
               >
-                {busy ? "Checking products…" : "Preview products"}
+                {isLoading("preview") ? "Checking…" : "Preview products"}
               </s-button>
               {!isPendingVariantAction && preview && (
                 <>
@@ -840,15 +849,17 @@ export default function NewTask() {
                     variant="primary"
                     tone="critical"
                     disabled={busy}
+                    loading={isLoading("run")}
                   >
-                    Apply Bulk Edit
+                    {isLoading("run") ? "Applying…" : "Apply Bulk Edit"}
                   </s-button>
                   <s-button
                     type="button"
                     onClick={() => submitWithIntent("create")}
                     disabled={busy}
+                    loading={isLoading("create")}
                   >
-                    Schedule for later
+                    {isLoading("create") ? "Saving…" : "Schedule for later"}
                   </s-button>
                 </>
               )}

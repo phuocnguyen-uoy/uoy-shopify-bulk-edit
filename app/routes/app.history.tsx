@@ -3,7 +3,15 @@ import type {
   HeadersFunction,
   LoaderFunctionArgs,
 } from "react-router";
-import { Form, redirect, useLoaderData, useRouteError } from "react-router";
+import {
+  redirect,
+  useActionData,
+  useLoaderData,
+  useNavigation,
+  useRouteError,
+  useSubmit,
+} from "react-router";
+import { useState } from "react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import db from "../db.server";
@@ -49,7 +57,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     throw new Response("Task and source run are required", { status: 422 });
   }
   const run = await enqueueRollback(session.shop, taskId, sourceRunId);
-  await executeRun(session.shop, run.id);
+  try {
+    await executeRun(session.shop, run.id);
+  } catch (err) {
+    return {
+      error: err instanceof Error ? err.message : "Revert failed",
+      sourceRunId,
+    };
+  }
   return redirect("/app/history");
 };
 
@@ -72,27 +87,39 @@ const STATUS_TONE: Record<string, BadgeTone> = {
 };
 
 function fmtDate(iso: string) {
-  return new Date(iso).toLocaleString(undefined, {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
+  const d = new Date(iso);
+  const Y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const H = String(d.getHours()).padStart(2, "0");
+  const i = String(d.getMinutes()).padStart(2, "0");
+  const s = String(d.getSeconds()).padStart(2, "0");
+  return `${Y}/${m}/${day} ${H}:${i}:${s}`;
 }
 
 const COLS = "2fr 0.8fr 1fr 0.7fr 1.2fr 1.2fr 0.7fr";
 
 export default function TaskHistory() {
   const { runs } = useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
+  const navigation = useNavigation();
+  const submit = useSubmit();
+  const busy = navigation.state !== "idle";
+  const revertingRunId = navigation.formData?.get("sourceRunId") as string | null;
+
+  const revertError = actionData && "error" in actionData ? actionData.error : null;
 
   return (
     <s-page heading="Task history" inlineSize="large">
       <s-button slot="primary-action" href="/app/tasks/new" variant="primary">
         New bulk edit
       </s-button>
+      {revertError && (
+        <s-banner tone="critical" heading="Revert failed">
+          <s-paragraph>{revertError}</s-paragraph>
+          <s-paragraph>The product may have been changed after the bulk edit ran. Please check the current values and revert manually if needed.</s-paragraph>
+        </s-banner>
+      )}
       <s-section heading="Bulk edit runs">
         {runs.length === 0 ? (
           <s-stack direction="block" gap="base">
@@ -142,13 +169,21 @@ export default function TaskHistory() {
                   </s-text>
                   <s-stack direction="inline" gap="small">
                   {run.canRevert && (
-                    <Form method="post">
-                      <input type="hidden" name="taskId" value={run.taskId} />
-                      <input type="hidden" name="sourceRunId" value={run.id} />
-                      <s-button type="submit" tone="critical">
-                        Revert
-                      </s-button>
-                    </Form>
+                    <s-button
+                      type="button"
+                      tone="critical"
+                      disabled={busy}
+                      loading={revertingRunId === run.id}
+                      onClick={() => {
+                        if (!window.confirm("Revert this run? All product changes from this run will be undone.")) return;
+                        const data = new FormData();
+                        data.set("taskId", run.taskId);
+                        data.set("sourceRunId", run.id);
+                        submit(data, { method: "post" });
+                      }}
+                    >
+                      {revertingRunId === run.id ? "Reverting…" : "Revert"}
+                    </s-button>
                   )}
                   </s-stack>
                 </s-grid>

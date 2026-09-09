@@ -159,15 +159,14 @@ const CONFLICT_TONE: Record<string, BadgeTone> = {
 };
 
 function fmtDate(iso: string) {
-  return new Date(iso).toLocaleString(undefined, {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
+  const d = new Date(iso);
+  const Y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const H = String(d.getHours()).padStart(2, "0");
+  const i = String(d.getMinutes()).padStart(2, "0");
+  const s = String(d.getSeconds()).padStart(2, "0");
+  return `${Y}/${m}/${day} ${H}:${i}:${s}`;
 }
 
 export default function RunDetail() {

@@ -6,14 +6,17 @@ import type {
 import {
   Form,
   redirect,
+  useActionData,
   useLoaderData,
   useNavigation,
   useRevalidator,
   useRouteError,
   useSubmit,
 } from "react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+
+import { DatePicker } from "../components/DatePicker";
 
 import db from "../db.server";
 import { executeRun } from "../services/jobs/execute.server";
@@ -166,7 +169,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       params.taskId,
       sourceRunId,
     );
-    await executeRun(session.shop, rollbackRun.id);
+    try {
+      await executeRun(session.shop, rollbackRun.id);
+    } catch (err) {
+      return {
+        revertError: err instanceof Error ? err.message : "Revert failed",
+        sourceRunId,
+      };
+    }
   } else if (intent === "schedule") {
     const rawRunAt = String(form.get("runAt") ?? "");
     const runAt = new Date(
@@ -285,15 +295,14 @@ function actionLabel(a: EditAction) {
 }
 
 function fmtDate(iso: string) {
-  return new Date(iso).toLocaleString(undefined, {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
+  const d = new Date(iso);
+  const Y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const H = String(d.getHours()).padStart(2, "0");
+  const i = String(d.getMinutes()).padStart(2, "0");
+  const s = String(d.getSeconds()).padStart(2, "0");
+  return `${Y}/${m}/${day} ${H}:${i}:${s}`;
 }
 
 function displayValue(value: unknown) {
@@ -305,10 +314,18 @@ function displayValue(value: unknown) {
 
 export default function TaskDetail() {
   const { task } = useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const revalidator = useRevalidator();
   const submit = useSubmit();
+  const [pendingIntent, setPendingIntent] = useState<string | null>(null);
   const busy = navigation.state !== "idle";
+
+  const revertError = actionData && "revertError" in actionData ? actionData.revertError : null;
+
+  useEffect(() => {
+    if (navigation.state === "idle") setPendingIntent(null);
+  }, [navigation.state]);
 
   const hasActiveRun = task.runs.some((r) =>
     ["QUEUED", "PREPARING", "RUNNING"].includes(r.status),
@@ -320,11 +337,17 @@ export default function TaskDetail() {
     return () => clearInterval(id);
   }, [hasActiveRun, revalidator]);
 
-  const act = (intent: string) => {
+  const act = (intent: string, extraData?: Record<string, string>) => {
+    setPendingIntent(intent);
     const data = new FormData();
     data.set("intent", intent);
+    if (extraData) {
+      for (const [k, v] of Object.entries(extraData)) data.set(k, v);
+    }
     submit(data, { method: "post" });
   };
+
+  const isLoading = (intent: string) => busy && pendingIntent === intent;
 
   const filters = task.filterDefinition?.conditions ?? [];
   const actions = task.actionDefinition?.actions ?? [];
@@ -336,9 +359,10 @@ export default function TaskDetail() {
         variant="primary"
         type="button"
         disabled={busy || hasActiveRun}
+        loading={isLoading("run_now")}
         onClick={() => act("run_now")}
       >
-        Run again
+        {isLoading("run_now") ? "Starting…" : "Run again"}
       </s-button>
       <s-button slot="secondary-actions" href="/app">
         All tasks
@@ -354,10 +378,21 @@ export default function TaskDetail() {
         type="button"
         tone="critical"
         disabled={busy || hasActiveRun}
-        onClick={() => act("delete")}
+        loading={isLoading("delete")}
+        onClick={() => {
+          if (!window.confirm("Delete this task? This cannot be undone.")) return;
+          act("delete");
+        }}
       >
-        Delete
+        {isLoading("delete") ? "Deleting…" : "Delete"}
       </s-button>
+
+      {revertError && (
+        <s-banner tone="critical" heading="Revert failed">
+          <s-paragraph>{revertError}</s-paragraph>
+          <s-paragraph>The product may have been changed after the bulk edit ran. Please check the current values and revert manually if needed.</s-paragraph>
+        </s-banner>
+      )}
 
       {hasActiveRun && (
         <s-banner tone="info" heading="Bulk edit is running…">
@@ -421,12 +456,12 @@ export default function TaskDetail() {
                   gridTemplateColumns="repeat(auto-fit, minmax(200px, 1fr))"
                   gap="base"
                 >
-                  <s-text-field
+                  <DatePicker
                     name="runAt"
                     label="Run at (local time)"
-                    placeholder="YYYY-MM-DDTHH:mm"
-                    details="Enter the run time in UTC."
+                    includeTime
                     required
+                    hint="Time is in your browser's local timezone."
                   />
                   <s-text-field
                     name="timezone"
@@ -441,8 +476,13 @@ export default function TaskDetail() {
                   />
                 </s-grid>
                 <input type="hidden" name="intent" value="schedule" />
-                <s-button type="submit" disabled={busy}>
-                  Set schedule
+                <s-button
+                  type="submit"
+                  disabled={busy}
+                  loading={isLoading("schedule")}
+                  onClick={() => setPendingIntent("schedule")}
+                >
+                  {isLoading("schedule") ? "Saving…" : "Set schedule"}
                 </s-button>
               </s-stack>
             </Form>
@@ -542,14 +582,18 @@ export default function TaskDetail() {
                           type="button"
                           tone="critical"
                           disabled={busy}
+                          loading={isLoading("rollback")}
                           onClick={() => {
-                            const data = new FormData();
-                            data.set("intent", "rollback");
-                            data.set("sourceRunId", run.id);
-                            submit(data, { method: "post" });
+                            if (
+                              !window.confirm(
+                                "Revert this run? All product changes from this run will be undone.",
+                              )
+                            )
+                              return;
+                            act("rollback", { sourceRunId: run.id });
                           }}
                         >
-                          Rollback this run
+                          {isLoading("rollback") ? "Reverting…" : "Revert this run"}
                         </s-button>
                       )}
                     </s-stack>
