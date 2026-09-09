@@ -67,6 +67,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       query TaskChangedProducts($ids: [ID!]!) {
         nodes(ids: $ids) {
           ... on Product { id title featuredImage { url } }
+          ... on Collection { id title image { url } }
           ... on ProductVariant {
             id title image { url }
             product { title featuredImage { url } }
@@ -390,7 +391,7 @@ export default function TaskDetail() {
       {revertError && (
         <s-banner tone="critical" heading="Revert failed">
           <s-paragraph>{revertError}</s-paragraph>
-          <s-paragraph>The product may have been changed after the bulk edit ran. Please check the current values and revert manually if needed.</s-paragraph>
+          <s-paragraph>A resource may have been changed after the bulk edit ran. Please check the current values and revert manually if needed.</s-paragraph>
         </s-banner>
       )}
 
@@ -489,9 +490,9 @@ export default function TaskDetail() {
           </s-stack>
         </s-section>
 
-        <s-section heading="Products changed">
+        <s-section heading={`${task.resourceType === "COLLECTION" ? "Collections" : "Products"} changed`}>
           {task.latestChanges.length === 0 ? (
-            <s-paragraph>No product changes recorded yet.</s-paragraph>
+            <s-paragraph>No {task.resourceType === "COLLECTION" ? "collection" : "product"} changes recorded yet.</s-paragraph>
           ) : (
             <s-stack direction="block" gap="base">
               {task.latestChanges.map((change) => (
@@ -566,7 +567,9 @@ export default function TaskDetail() {
                       {run.changeCount > 0 && (
                         <s-badge tone="info">
                           {run.changeCount}{" "}
-                          {run.changeCount === 1 ? "product" : "products"} changed
+                          {run.changeCount === 1
+                            ? task.resourceType === "COLLECTION" ? "collection" : "product"
+                            : task.resourceType === "COLLECTION" ? "collections" : "products"} changed
                         </s-badge>
                       )}
                     </s-stack>
@@ -586,7 +589,7 @@ export default function TaskDetail() {
                           onClick={() => {
                             if (
                               !window.confirm(
-                                "Revert this run? All product changes from this run will be undone.",
+                                `Revert this run? All ${task.resourceType === "COLLECTION" ? "collection" : "product"} changes from this run will be undone.`,
                               )
                             )
                               return;

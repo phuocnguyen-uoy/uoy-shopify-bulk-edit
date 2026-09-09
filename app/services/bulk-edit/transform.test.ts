@@ -48,3 +48,18 @@ it("prevents negative prices and preserves decimal strings", () => {
     { field: "price", operation: "decrease_percent", value: 150 },
   ])).toEqual({ price: "0.00" });
 });
+
+
+describe("collection actions", () => {
+  it("updates editable collection fields", () => {
+    expect(applyActions("COLLECTION", { title: "Summer", handle: "summer" }, [
+      { field: "title", operation: "add", value: " Sale" },
+    ])).toEqual({ title: "Summer Sale", handle: "summer" });
+  });
+
+  it("rejects product-only fields", () => {
+    expect(() => applyActions("COLLECTION", { vendor: "ACME" }, [
+      { field: "vendor", operation: "set", value: "Other" },
+    ])).toThrow("Unsupported collection field");
+  });
+});

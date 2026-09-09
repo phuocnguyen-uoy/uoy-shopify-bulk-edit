@@ -47,3 +47,46 @@ it("uses an unfiltered candidate query for negative substring matching", () => {
     }),
   ).toBe("");
 });
+
+describe("product collection filters", () => {
+  it("matches a product in any selected collection", () => {
+    expect(compileProductSearch("PRODUCT", {
+      combinator: "and",
+      conditions: [{ field: "collectionId", operator: "equals", value: "123,456" }],
+    })).toBe('((collection_id:"123" OR collection_id:"456"))');
+  });
+
+  it("excludes products in every selected collection", () => {
+    expect(compileProductSearch("PRODUCT", {
+      combinator: "and",
+      conditions: [{ field: "collectionId", operator: "not_equals", value: "123,456" }],
+    })).toBe('((-collection_id:"123" AND -collection_id:"456"))');
+  });
+
+  it("rejects malformed collection IDs", () => {
+    expect(() => compileProductSearch("PRODUCT", {
+      combinator: "and",
+      conditions: [{ field: "collectionId", operator: "equals", value: "123,nope" }],
+    })).toThrow("numeric collection IDs");
+  });
+});
+
+
+describe("collection filters", () => {
+  it("compiles title and handle filters", () => {
+    expect(compileProductSearch("COLLECTION", {
+      combinator: "and",
+      conditions: [
+        { field: "title", operator: "equals", value: "Summer" },
+        { field: "handle", operator: "contains", value: "sale" },
+      ],
+    })).toBe('(title:"Summer") AND (handle:*)');
+  });
+
+  it("rejects product-only fields", () => {
+    expect(() => compileProductSearch("COLLECTION", {
+      combinator: "and",
+      conditions: [{ field: "vendor", operator: "equals", value: "ACME" }],
+    })).toThrow("Unsupported collection field");
+  });
+});

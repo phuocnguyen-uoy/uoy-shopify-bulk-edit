@@ -28,6 +28,21 @@ function compileCondition(resource: ResourceType, condition: FilterCondition) {
   if (condition.value === undefined)
     throw new Error(`Filter value is required for ${condition.field}`);
 
+  if (resource === "PRODUCT" && condition.field === "collectionId") {
+    const ids = String(condition.value)
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean);
+    if (ids.length === 0 || ids.some((id) => !/^\d+$/.test(id))) {
+      throw new Error("Collection filter requires numeric collection IDs");
+    }
+    const clauses = ids.map((id) => `${key}:${quote(id)}`);
+    if (condition.operator === "equals") return `(${clauses.join(" OR ")})`;
+    if (condition.operator === "not_equals") {
+      return `(${clauses.map((clause) => `-${clause}`).join(" AND ")})`;
+    }
+  }
+
   const value = quote(condition.value);
   switch (condition.operator) {
     case "equals":

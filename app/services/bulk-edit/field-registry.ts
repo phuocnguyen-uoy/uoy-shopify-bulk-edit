@@ -70,7 +70,15 @@ export const fieldRegistry: Record<ResourceType, Record<string, FieldDefinition>
     inventoryQuantity: { kind: "number", filterOperators: numberOperators, editable: false },
     costPerItem: { kind: "number", filterOperators: numberOperators, editable: true },
   },
-  COLLECTION: {},
+  COLLECTION: {
+    title: { kind: "string", searchKey: "title", filterOperators: textOperators, editable: true },
+    handle: { kind: "string", searchKey: "handle", filterOperators: textOperators, editable: true },
+    descriptionHtml: { kind: "string", filterOperators: [], editable: true },
+    seoTitle: { kind: "string", filterOperators: [], editable: true },
+    seoDescription: { kind: "string", filterOperators: [], editable: true },
+    templateSuffix: { kind: "string", filterOperators: [], editable: true },
+    updatedAt: { kind: "string", searchKey: "updated_at", filterOperators: ["greater_than", "less_than"], editable: false },
+  },
 };
 
 export function requireField(resource: ResourceType, field: string) {

@@ -58,6 +58,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       query ChangedResourceLabels($ids: [ID!]!) {
         nodes(ids: $ids) {
           ... on Product { id title featuredImage { url } }
+          ... on Collection { id title image { url } }
           ... on ProductVariant {
             id
             title
@@ -214,7 +215,7 @@ export default function RunDetail() {
               <div style={{ border: "1px solid #d1d1d1", borderRadius: 12, overflow: "hidden" }}>
                 <div style={{ padding: 12, background: "#f7f7f7" }}>
                   <s-grid gridTemplateColumns={gridCols} gap="base">
-                    <s-text type="strong">Product / Variant</s-text>
+                    <s-text type="strong">Resource</s-text>
                     {fields.map((field) => (
                       <s-text key={field} type="strong">
                         {FIELD_LABEL[field] ?? field}

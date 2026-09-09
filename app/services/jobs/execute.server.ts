@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import db from "../../db.server";
 import { unauthenticated } from "../../shopify.server";
-import { PRODUCT_UPDATE_MUTATION, VARIANT_UPDATE_MUTATION, stageAndRunForTask } from "../bulk-edit/bulk-operations.server";
+import { PRODUCT_UPDATE_MUTATION, VARIANT_UPDATE_MUTATION, COLLECTION_UPDATE_MUTATION, stageAndRunForTask } from "../bulk-edit/bulk-operations.server";
 import { applyActions } from "../bulk-edit/transform";
 import type { ActionDefinition, EditAction } from "../tasks/types";
 import { tenantDb } from "../tenant.server";
@@ -14,6 +14,16 @@ type ProductSnapshot = {
   productType: string;
   status: string;
   tags: string[];
+  handle: string;
+  templateSuffix: string | null;
+  seo: { title: string | null; description: string | null };
+  seoTitle: string | null;
+  seoDescription: string | null;
+};
+type CollectionSnapshot = {
+  id: string;
+  title: string;
+  descriptionHtml: string;
   handle: string;
   templateSuffix: string | null;
   seo: { title: string | null; description: string | null };
@@ -33,6 +43,7 @@ type VariantSnapshot = {
 
 type GraphqlClient = { graphql: (query: string, options?: { variables?: Record<string, unknown> }) => Promise<Response> };
 const productFields = new Set(["title", "descriptionHtml", "vendor", "productType", "status", "tags", "handle", "templateSuffix", "seoTitle", "seoDescription"]);
+const collectionFields = new Set(["title", "handle", "descriptionHtml", "templateSuffix", "seoTitle", "seoDescription"]);
 const variantFields = new Map<string, string>([
   ["variantPrice", "price"],
   ["variantCompareAtPrice", "compareAtPrice"],
@@ -43,26 +54,32 @@ const variantFields = new Map<string, string>([
 ]);
 const operations = new Set(["set", "clear", "find_replace", "add", "remove", "increase_fixed", "increase_percent", "decrease_fixed", "decrease_percent"]);
 
-function parseActions(value: Prisma.JsonValue): ActionDefinition {
+function parseActions(value: Prisma.JsonValue, resourceType: "PRODUCT" | "COLLECTION" | "VARIANT"): ActionDefinition {
   if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray(value.actions)) {
     throw new Error("Invalid task actionDefinition: actions must be an array");
   }
+  const validFields = resourceType === "COLLECTION"
+    ? collectionFields
+    : new Set([...productFields, ...variantFields.keys()]);
   const actions = value.actions.map((raw): EditAction => {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid task action");
-    if (typeof raw.field !== "string" || !productFields.has(raw.field) && !variantFields.has(raw.field)) throw new Error("Unsupported product action field");
-    if (typeof raw.operation !== "string" || !operations.has(raw.operation)) throw new Error("Unsupported product action operation");
+    if (typeof raw.field !== "string" || !validFields.has(raw.field)) throw new Error(`Unsupported ${resourceType.toLowerCase()} action field`);
+    if (typeof raw.operation !== "string" || !operations.has(raw.operation)) throw new Error("Unsupported action operation");
     return raw as unknown as EditAction;
   });
   if (actions.length === 0) throw new Error("Task has no actions");
-  const scopes = new Set(actions.map((action) => variantFields.has(action.field) ? "VARIANT" : "PRODUCT"));
-  if (scopes.size !== 1) throw new Error("A task cannot mix product and variant action fields");
+  if (resourceType !== "COLLECTION") {
+    const scopes = new Set(actions.map((action) => variantFields.has(action.field) ? "VARIANT" : "PRODUCT"));
+    if (scopes.size !== 1) throw new Error("A task cannot mix product and variant action fields");
+  }
   return { actions };
 }
 
-function parseFrozenIds(value: Prisma.JsonValue | null): string[] {
+function parseFrozenIds(value: Prisma.JsonValue | null, resourceType: "PRODUCT" | "COLLECTION"): string[] {
   if (!Array.isArray(value) || value.length === 0) throw new Error("Task has no frozen preview resources");
-  if (value.length > 250 || value.some((id) => typeof id !== "string" || !id.startsWith("gid://shopify/Product/"))) {
-    throw new Error("Task frozenResourceIds are invalid or exceed the 250-product MVP limit");
+  const prefix = resourceType === "COLLECTION" ? "gid://shopify/Collection/" : "gid://shopify/Product/";
+  if (value.length > 250 || value.some((id) => typeof id !== "string" || !id.startsWith(prefix))) {
+    throw new Error(`Task frozenResourceIds are invalid or exceed the 250-${resourceType.toLowerCase()} MVP limit`);
   }
   return [...new Set(value as string[])];
 }
@@ -168,6 +185,49 @@ async function snapshotVariantsByIds(admin: GraphqlClient, ids: string[]): Promi
   return variants;
 }
 
+async function snapshotCollectionBatch(admin: GraphqlClient, ids: string[], retry = true): Promise<CollectionSnapshot[]> {
+  const response = await admin.graphql(`#graphql
+    query CollectionSnapshots($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on Collection { id title descriptionHtml handle templateSuffix seo { title description } }
+      }
+    }
+  `, { variables: { ids } });
+  if (response.status === 429 && retry) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    return snapshotCollectionBatch(admin, ids, false);
+  }
+  const body = await response.json() as {
+    data?: { nodes?: Array<Omit<CollectionSnapshot, "seoTitle" | "seoDescription"> | null> };
+    errors?: Array<{ message: string; extensions?: { code?: string } }>;
+  };
+  const throttled = body.errors?.some((error) => error.extensions?.code === "THROTTLED");
+  if (throttled && retry) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    return snapshotCollectionBatch(admin, ids, false);
+  }
+  if (!response.ok || body.errors?.length) throw new Error(body.errors?.map((error) => error.message).join("; ") || `Snapshot HTTP ${response.status}`);
+  const collections = body.data?.nodes?.filter((node): node is NonNullable<typeof node> => Boolean(node)).map((collection) => ({
+    ...collection,
+    seoTitle: collection.seo?.title ?? null,
+    seoDescription: collection.seo?.description ?? null,
+  })) ?? [];
+  if (collections.length !== ids.length) throw new Error("One or more frozen collections no longer exist");
+  return collections;
+}
+
+function collectionInput(id: string, flat: Prisma.InputJsonObject) {
+  const input: Record<string, unknown> = { id };
+  const seo: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(flat)) {
+    if (field === "seoTitle") seo.title = value;
+    else if (field === "seoDescription") seo.description = value;
+    else input[field] = value;
+  }
+  if (Object.keys(seo).length > 0) input.seo = seo;
+  return input;
+}
+
 function variantInput(id: string, flat: Prisma.InputJsonObject) {
   const input: Record<string, unknown> = { id };
   for (const [field, value] of Object.entries(flat)) {
@@ -262,6 +322,31 @@ async function executeRollback(
     );
   }
 
+  if (resourceTypes.has("COLLECTION")) {
+    const collections = await snapshotCollectionBatch(admin, sourceChanges.map((change) => change.resourceGid));
+    const byId = new Map(collections.map((collection) => [collection.id, collection]));
+    const rows: Record<string, unknown>[] = [];
+    const reverseChanges = sourceChanges.map((change) => {
+      const before = parseSnapshot(change.before, "before");
+      const expected = parseSnapshot(change.after, "after");
+      const current = byId.get(change.resourceGid);
+      if (!current) throw new Error("Rollback collection no longer exists: " + change.resourceGid);
+      const fields = new Set(Object.keys(expected));
+      const actual = pick(current, fields);
+      if (canonicalJson(actual) !== canonicalJson(expected)) throw new Error("Rollback conflict detected for " + change.resourceGid);
+      rows.push({ input: collectionInput(change.resourceGid, before) });
+      return {
+        runId,
+        resourceGid: change.resourceGid,
+        resourceType: "COLLECTION" as const,
+        before: actual,
+        after: before,
+      };
+    });
+    await scoped.taskChange.createMany(reverseChanges);
+    return stageAndRunForTask(admin, scoped.shopDomain, runId, COLLECTION_UPDATE_MUTATION, rows);
+  }
+
   const products = await snapshotBatch(admin, sourceChanges.map((change) => change.resourceGid));
   const byId = new Map(products.map((product) => [product.id, product]));
   const rows: Record<string, unknown>[] = [];
@@ -299,12 +384,36 @@ export async function executeRun(shopDomain: string, runId: string) {
       if (!run.sourceRunId) throw new Error("Rollback run is missing sourceRunId");
       return executeRollback(admin, scoped.shopDomain, run.id, run.sourceRunId);
     }
-    if (run.task.resourceType !== "PRODUCT" || run.task.selectionMode !== "FROZEN") {
-      throw new Error("MVP executor supports PRODUCT FROZEN tasks only");
+    const resourceType = run.task.resourceType as "PRODUCT" | "COLLECTION";
+    if (!["PRODUCT", "COLLECTION"].includes(resourceType) || run.task.selectionMode !== "FROZEN") {
+      throw new Error("MVP executor supports PRODUCT and COLLECTION FROZEN tasks only");
     }
-    const actions = parseActions(run.task.actionDefinition);
-    const ids = parseFrozenIds(run.task.frozenResourceIds);
+    const actions = parseActions(run.task.actionDefinition, resourceType);
+    const ids = parseFrozenIds(run.task.frozenResourceIds, resourceType);
     const fields = new Set(actions.actions.map((action) => action.field));
+
+    if (resourceType === "COLLECTION") {
+      const collections = await snapshotCollectionBatch(admin, ids);
+      const changes = collections.map((collection) => {
+        const after = applyActions("COLLECTION", collection, actions.actions);
+        return {
+          shopDomain: scoped.shopDomain,
+          runId,
+          resourceGid: collection.id,
+          resourceType: "COLLECTION" as const,
+          before: pick(collection, fields),
+          after: pick(after, fields),
+          input: collectionInput(collection.id, pick(after, fields)),
+        };
+      }).filter((change) => canonicalJson(change.before) !== canonicalJson(change.after));
+      if (changes.length === 0) {
+        await scoped.taskRun.completeWithoutOperation(runId);
+        return null;
+      }
+      await scoped.taskChange.createMany(changes.map(({ input: _input, ...change }) => change));
+      return stageAndRunForTask(admin, scoped.shopDomain, runId, COLLECTION_UPDATE_MUTATION, changes.map((change) => ({ input: change.input })));
+    }
+
     const variantScope = actions.actions.every((action) => variantFields.has(action.field));
 
     if (variantScope) {

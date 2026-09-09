@@ -38,6 +38,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       id: run.id,
       taskId: run.task.id,
       taskName: run.task.name,
+      resourceType: run.task.resourceType,
       kind: run.kind,
       status: run.status,
       createdAt: run.createdAt.toISOString(),
@@ -117,7 +118,7 @@ export default function TaskHistory() {
       {revertError && (
         <s-banner tone="critical" heading="Revert failed">
           <s-paragraph>{revertError}</s-paragraph>
-          <s-paragraph>The product may have been changed after the bulk edit ran. Please check the current values and revert manually if needed.</s-paragraph>
+          <s-paragraph>A resource may have been changed after the bulk edit ran. Please check the current values and revert manually if needed.</s-paragraph>
         </s-banner>
       )}
       <s-section heading="Bulk edit runs">
@@ -141,7 +142,7 @@ export default function TaskHistory() {
                 <s-text type="strong">Task</s-text>
                 <s-text type="strong">Type</s-text>
                 <s-text type="strong">Status</s-text>
-                <s-text type="strong">Products</s-text>
+                <s-text type="strong">Resources</s-text>
                 <s-text type="strong">Started</s-text>
                 <s-text type="strong">Completed</s-text>
                 <s-text type="strong">Action</s-text>
@@ -175,7 +176,7 @@ export default function TaskHistory() {
                       disabled={busy}
                       loading={revertingRunId === run.id}
                       onClick={() => {
-                        if (!window.confirm("Revert this run? All product changes from this run will be undone.")) return;
+                        if (!window.confirm(`Revert this run? All ${run.resourceType === "COLLECTION" ? "collection" : "product"} changes from this run will be undone.`)) return;
                         const data = new FormData();
                         data.set("taskId", run.taskId);
                         data.set("sourceRunId", run.id);

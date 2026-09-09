@@ -111,6 +111,15 @@ export const VARIANT_UPDATE_MUTATION = `
   }
 `;
 
+export const COLLECTION_UPDATE_MUTATION = `
+  mutation call($input: CollectionInput!) {
+    collectionUpdate(input: $input) {
+      collection { id }
+      userErrors { field message }
+    }
+  }
+`;
+
 export async function stageAndRunForTask(
   admin: GraphqlClient,
   shopDomain: string,

@@ -17,6 +17,7 @@ import type { ResourceType } from "@prisma/client";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { DatePicker } from "../components/DatePicker";
+import { CollectionPicker } from "../components/CollectionPicker";
 
 import { compileProductSearch } from "../services/bulk-edit/filter-compiler";
 import { executeRun } from "../services/jobs/execute.server";
@@ -66,7 +67,7 @@ function readConfiguration(form: FormData) {
   const resourceType = String(
     form.get("resourceType") ?? "PRODUCT",
   ) as ResourceType;
-  if (resourceType !== "PRODUCT") {
+  if (resourceType !== "PRODUCT" && resourceType !== "COLLECTION") {
     throw new Response("Unsupported resource type", { status: 422 });
   }
   const field = String(form.get("filterField") ?? "").trim();
@@ -221,23 +222,86 @@ async function affectedCount(
   };
 }
 
+type CollectionPreviewNode = { id: string; title: string; handle: string };
+
+function applyCollectionContainsPostFilter(nodes: CollectionPreviewNode[], conditions: FilterCondition[]) {
+  const substringConds = conditions.filter(
+    (c) => (c.operator === "contains" || c.operator === "not_contains") && (c.field === "title" || c.field === "handle"),
+  );
+  if (substringConds.length === 0) return nodes;
+  return nodes.filter((node) =>
+    substringConds.every((cond) => {
+      const searchVal = String(cond.value ?? "").toLowerCase();
+      const value = String(node[cond.field as "title" | "handle"] ?? "").toLowerCase();
+      const matches = value.includes(searchVal);
+      return cond.operator === "contains" ? matches : !matches;
+    }),
+  );
+}
+
+async function affectedCollectionsCount(
+  admin: Awaited<ReturnType<typeof authenticate.admin>>["admin"],
+  query: string,
+  filterConditions: FilterCondition[],
+) {
+  const response = await admin.graphql(
+    `#graphql
+    query PreviewAffectedCollections($query: String!) {
+      collectionsCount(query: $query) { count precision }
+      collections(first: 250, query: $query) {
+        nodes { id title handle }
+        pageInfo { hasNextPage }
+      }
+    }`,
+    { variables: { query } },
+  );
+  if (!response.ok) throw new Response("Shopify collection preview request failed", { status: 502 });
+  const body = (await response.json()) as {
+    data?: {
+      collectionsCount?: { count: number; precision: string };
+      collections?: { nodes: CollectionPreviewNode[]; pageInfo: { hasNextPage: boolean } };
+    };
+    errors?: Array<{ message: string }>;
+  };
+  if (body.errors?.length) throw new Response(body.errors.map((e) => e.message).join("; "), { status: 422 });
+  const result = body.data?.collectionsCount;
+  const collections = body.data?.collections;
+  if (!result || !collections) throw new Response("Shopify returned incomplete collection preview data", { status: 502 });
+  if (collections.pageInfo.hasNextPage || result.count > 250) {
+    throw new Response("MVP supports at most 250 collections per frozen task", { status: 422 });
+  }
+  const matched = applyCollectionContainsPostFilter(collections.nodes, filterConditions);
+  if (matched.length === 0) throw new Response("No collections match this filter", { status: 422 });
+  return {
+    count: matched.length,
+    precision: matched.length === result.count ? result.precision : "EXACT",
+    resourceIds: matched.map((c) => c.id),
+  };
+}
+
+async function previewResources(
+  admin: Awaited<ReturnType<typeof authenticate.admin>>["admin"],
+  resourceType: string,
+  query: string,
+  filterConditions: FilterCondition[],
+) {
+  if (resourceType === "COLLECTION") return affectedCollectionsCount(admin, query, filterConditions);
+  return affectedCount(admin, resourceType as "PRODUCT", query, filterConditions);
+}
+
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const form = await request.formData();
   const intent = form.get("intent");
   try {
     const configuration = readConfiguration(form);
-    const query = compileProductSearch(
-      configuration.resourceType,
-      configuration.filters,
-    );
+    const query = compileProductSearch(configuration.resourceType, configuration.filters);
 
     if (intent === "create" || intent === "run") {
       const rawIds = String(form.get("frozenIds") ?? "").trim();
       const frozenResourceIds = rawIds
         ? rawIds.split(",").filter(Boolean)
-        : (await affectedCount(admin, configuration.resourceType, query, configuration.filters.conditions))
-            .resourceIds;
+        : (await previewResources(admin, configuration.resourceType, query, configuration.filters.conditions)).resourceIds;
 
       const task = await createDraftTask(session.shop, {
         ...configuration,
@@ -250,12 +314,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return redirect(`/app/tasks/${task.id}`);
     }
 
-    const preview = await affectedCount(
-      admin,
-      configuration.resourceType,
-      query,
-      configuration.filters.conditions,
-    );
+    const preview = await previewResources(admin, configuration.resourceType, query, configuration.filters.conditions);
     return { preview, query };
   } catch (e) {
     if (e instanceof Response) {
@@ -268,7 +327,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 // ── Client-side field metadata ────────────────────────────────────────────────
 
-type UiKind = "string" | "string_list" | "number" | "date" | "status" | "boolean";
+type UiKind = "string" | "string_list" | "number" | "date" | "status" | "boolean" | "collection_picker";
 
 const PRODUCT_FILTER_FIELDS: { value: string; label: string; kind: UiKind }[] =
   [
@@ -279,7 +338,7 @@ const PRODUCT_FILTER_FIELDS: { value: string; label: string; kind: UiKind }[] =
     { value: "status",                label: "Product status",              kind: "status" },
     { value: "tags",                  label: "Product tags",                kind: "string_list" },
     { value: "handle",                label: "Product URL handle",          kind: "string" },
-    { value: "collectionId",          label: "Product collection",          kind: "string" },
+    { value: "collectionId",          label: "Product collection",          kind: "collection_picker" },
     { value: "totalInventory",        label: "Product total inventory",     kind: "number" },
     { value: "variantsCount",         label: "Product variants count",      kind: "number" },
     { value: "publishedAt",           label: "Product published at",        kind: "date" },
@@ -345,12 +404,16 @@ const VARIANT_ACTION_FIELDS: { value: string; label: string; kind: UiKind }[] = 
 const COLLECTION_FILTER_FIELDS: { value: string; label: string; kind: UiKind }[] = [
   { value: "title", label: "Collection title", kind: "string" },
   { value: "handle", label: "Collection URL handle", kind: "string" },
+  { value: "updatedAt", label: "Collection updated at", kind: "date" },
 ];
 
 const COLLECTION_ACTION_FIELDS: { value: string; label: string; kind: UiKind }[] = [
-  { value: "title", label: "Collection title", kind: "string" },
-  { value: "descriptionHtml", label: "Collection description HTML", kind: "string" },
-  { value: "handle", label: "Collection URL handle", kind: "string" },
+  { value: "title", label: "Title", kind: "string" },
+  { value: "descriptionHtml", label: "Description (HTML)", kind: "string" },
+  { value: "handle", label: "URL handle", kind: "string" },
+  { value: "seoTitle", label: "SEO page title", kind: "string" },
+  { value: "seoDescription", label: "SEO meta description", kind: "string" },
+  { value: "templateSuffix", label: "Theme template suffix", kind: "string" },
 ];
 
 type ActionResult =
@@ -415,19 +478,24 @@ export default function NewTask() {
     setActionField(firstAction);
     setFilterOperator("contains");
     setOperation("set");
+    setFilterValue("");
+    setActionValue("");
   };
 
   const handleFilterFieldChange = (newField: string) => {
     setFilterField(newField);
+    setFilterValue("");
     const kind =
       filterFields.find((f) => f.value === newField)?.kind ?? "string";
-    if (kind === "number" || kind === "date") setFilterOperator("greater_than");
+    if (newField === "collectionId") setFilterOperator("equals");
+    else if (kind === "number" || kind === "date") setFilterOperator("greater_than");
     else if (kind === "status" || kind === "boolean") setFilterOperator("equals");
     else setFilterOperator("contains");
   };
 
   const handleActionFieldChange = (newField: string) => {
     setActionField(newField);
+    setActionValue("");
     setOperation("set");
   };
 
@@ -474,32 +542,20 @@ export default function NewTask() {
                 label="Resource"
                 value={resourceType}
                 onChange={(event) => {
-                  const next = event.currentTarget.value as ResourceType;
-                  setResourceType(next);
-                  setFilterField("title");
-                  setActionField("title");
-                  setFilterOperator("contains");
-                  setOperation("set");
+                  handleResourceTypeChange(event.currentTarget.value as ResourceType);
                 }}
               >
                 <s-option value="PRODUCT">Products</s-option>
                 <s-option value="COLLECTION">Collections</s-option>
               </s-select>
-              {resourceType === "COLLECTION" && (
-                <s-banner tone="warning" heading="Collection editing in progress">
-                  <s-paragraph>
-                    Preview and Apply are disabled until the Collection executor passes E2E Apply and Revert testing.
-                  </s-paragraph>
-                </s-banner>
-              )}
             </s-stack>
           </s-section>
 
           {/* Filter products */}
-          <s-section heading="Filter products">
+          <s-section heading={resourceType === "COLLECTION" ? "Filter collections" : "Filter products"}>
             <s-stack direction="block" gap="base">
               <s-paragraph>
-                Only products matching this condition will be included in the
+                Only {resourceType === "COLLECTION" ? "collections" : "products"} matching this condition will be included in the
                 bulk edit.
               </s-paragraph>
               <s-grid
@@ -508,6 +564,7 @@ export default function NewTask() {
               >
                 {/* Field selector */}
                 <s-select
+                  key={`filter-field-${resourceType}`}
                   name="filterField"
                   label="Field"
                   value={filterField}
@@ -533,7 +590,12 @@ export default function NewTask() {
                     )
                   }
                 >
-                  {filterKind === "number" || filterKind === "date" ? (
+                  {filterField === "collectionId" ? (
+                    <>
+                      <s-option value="equals">Is in any of</s-option>
+                      <s-option value="not_equals">Is not in any of</s-option>
+                    </>
+                  ) : filterKind === "number" || filterKind === "date" ? (
                     <>
                       <s-option value="greater_than">
                         {filterKind === "date" ? "After" : "Greater than"}
@@ -603,22 +665,24 @@ export default function NewTask() {
                   />
                 ) : filterKind === "number" ? (
                   <s-text-field
+                    key={`${resourceType}-${filterField}`}
                     name="filterValue"
                     label="Value"
                     placeholder="0"
                     details="Enter a numeric value."
                     defaultValue={String(prefill?.filter?.value ?? "")}
                   />
-                ) : filterField === "collectionId" ? (
-                  <s-text-field
+                ) : filterKind === "collection_picker" ? (
+                  <CollectionPicker
+                    key={`${resourceType}-${filterField}`}
                     name="filterValue"
-                    label="Collection ID"
-                    placeholder="Numeric collection ID"
-                    details="Enter the collection's numeric ID."
+                    label="Collections"
                     defaultValue={String(prefill?.filter?.value ?? "")}
+                    hint="Select one or more collections. Products in any selected collection will be included."
                   />
                 ) : (
                   <s-text-field
+                    key={`${resourceType}-${filterField}`}
                     name="filterValue"
                     label="Value"
                     placeholder={
@@ -646,6 +710,7 @@ export default function NewTask() {
               >
                 {/* Action field */}
                 <s-select
+                  key={`action-field-${resourceType}`}
                   name="actionField"
                   label="Field to edit"
                   value={actionField}
@@ -766,6 +831,7 @@ export default function NewTask() {
                   </s-select>
                 ) : (
                   <s-text-field
+                    key={`${resourceType}-${actionField}-${operation}`}
                     name="actionValue"
                     label={
                       operation === "add"
@@ -819,7 +885,7 @@ export default function NewTask() {
             {!isPendingVariantAction && preview ? (
               <s-banner
                 tone="success"
-                heading={`${preview.count} product${preview.count === 1 ? "" : "s"} matched`}
+                heading={`${preview.count} ${resourceType === "COLLECTION" ? `collection${preview.count === 1 ? "" : "s"}` : `product${preview.count === 1 ? "" : "s"}`} matched`}
               >
                 <s-paragraph>
                   Ready to edit. Click Apply Bulk Edit to run immediately, or
@@ -828,18 +894,17 @@ export default function NewTask() {
               </s-banner>
             ) : !isPendingVariantAction ? (
               <s-paragraph>
-                Preview the selection first. No product data changes during this
-                step.
+                Preview the selection first. No {resourceType === "COLLECTION" ? "collection" : "product"} data changes during this step.
               </s-paragraph>
             ) : null}
             <s-stack direction="inline" gap="base">
               <s-button
                 type="button"
                 onClick={() => submitWithIntent("preview")}
-                disabled={busy || resourceType !== "PRODUCT" || isPendingVariantAction}
+                disabled={busy || isPendingVariantAction}
                 loading={isLoading("preview")}
               >
-                {isLoading("preview") ? "Checking…" : "Preview products"}
+                {isLoading("preview") ? "Checking…" : resourceType === "COLLECTION" ? "Preview collections" : "Preview products"}
               </s-button>
               {!isPendingVariantAction && preview && (
                 <>

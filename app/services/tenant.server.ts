@@ -62,7 +62,7 @@ export function tenantDb(db: DbClient, rawShopDomain: string) {
           take: 100,
           include: {
             task: {
-              select: { id: true, name: true, frozenResourceIds: true },
+              select: { id: true, name: true, resourceType: true, frozenResourceIds: true },
             },
             _count: { select: { changes: true } },
           },
@@ -72,7 +72,7 @@ export function tenantDb(db: DbClient, rawShopDomain: string) {
           where: { id: runId, shopDomain },
           include: {
             task: {
-              select: { id: true, name: true, frozenResourceIds: true },
+              select: { id: true, name: true, resourceType: true, frozenResourceIds: true },
             },
             changes: { orderBy: { createdAt: "asc" } },
           },
