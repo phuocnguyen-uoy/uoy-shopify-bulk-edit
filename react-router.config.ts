@@ -1,6 +1,6 @@
 import type { Config } from "@react-router/dev/config";
 
-const productionHost = "bulk-editor.uoymedia.work";
+const productionHost = "uoy-shopify-bulk-edit-1.onrender.com";
 
 export default {
   // Shopify dev actions originate from the public tunnel while React Router
