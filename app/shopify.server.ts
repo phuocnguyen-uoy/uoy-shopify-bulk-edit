@@ -15,7 +15,7 @@ const shopify = shopifyApp({
   appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
-  distribution: AppDistribution.SingleMerchant,
+  distribution: AppDistribution.AppStore,
   hooks: {
     afterAuth: async ({ session }) => {
       await prisma.shop.upsert({

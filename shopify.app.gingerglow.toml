@@ -2,7 +2,7 @@
 
 client_id = "2182ce328efa7502b05f8142e93b7209"
 name = "UOY Bulk Editor Custom"
-application_url = "https://uoy-shopify-bulk-edit-1.onrender.com"
+application_url = "https://uoy-bulk-editor.onrender.com"
 embedded = true
 
 [access_scopes]
@@ -12,7 +12,7 @@ optional_scopes = [ ]
 use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://uoy-shopify-bulk-edit-1.onrender.com/auth/callback" ]
+redirect_urls = [ "https://uoy-bulk-editor.onrender.com/auth/callback" ]
 
 [webhooks]
 api_version = "2026-07"

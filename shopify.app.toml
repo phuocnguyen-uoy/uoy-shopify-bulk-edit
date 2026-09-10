@@ -1,8 +1,8 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "8c011a2792436213134d604517505948"
+client_id = "3f77325888a86c6685c5acb50689c172"
 name = "UOY Bulk Product Editor"
-application_url = "https://uoy-shopify-bulk-edit-1.onrender.com"
+application_url = "https://uoy-bulk-editor.onrender.com"
 embedded = true
 
 [build]
@@ -38,4 +38,4 @@ optional_scopes = [ ]
 use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://uoy-shopify-bulk-edit-1.onrender.com/auth/callback" ]
+redirect_urls = [ "https://uoy-bulk-editor.onrender.com/auth/callback" ]
