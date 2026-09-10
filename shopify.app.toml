@@ -2,7 +2,7 @@
 
 client_id = "3f77325888a86c6685c5acb50689c172"
 name = "UOY Bulk Product Editor"
-application_url = "https://uoy-bulk-editor.onrender.com"
+application_url = "https://uoy-bulk-product-editor.onrender.com"
 embedded = true
 
 [build]
@@ -38,4 +38,4 @@ optional_scopes = [ ]
 use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://uoy-bulk-editor.onrender.com/auth/callback" ]
+redirect_urls = [ "https://uoy-bulk-product-editor.onrender.com/auth/callback" ]
