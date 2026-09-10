@@ -1,9 +1,14 @@
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return "[" + value.map(canonicalJson).sort().join(",") + "]";
+const SHOPIFY_TRIMMED_FIELDS = new Set(["title"]);
+
+function canonicalJson(value: unknown, field?: string): string {
+  if (typeof value === "string" && field && SHOPIFY_TRIMMED_FIELDS.has(field)) {
+    return JSON.stringify(value.trim());
+  }
+  if (Array.isArray(value)) return "[" + value.map((item) => canonicalJson(item, field)).sort().join(",") + "]";
   if (value && typeof value === "object") {
     const object = value as Record<string, unknown>;
     return "{" + Object.keys(object).sort()
-      .map((key) => JSON.stringify(key) + ":" + canonicalJson(object[key])).join(",") + "}";
+      .map((key) => JSON.stringify(key) + ":" + canonicalJson(object[key], key)).join(",") + "}";
   }
   return JSON.stringify(value);
 }
