@@ -11,7 +11,6 @@ import {
   useRouteError,
   useSubmit,
 } from "react-router";
-import { useState } from "react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import db from "../db.server";

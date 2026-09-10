@@ -70,7 +70,14 @@ export async function reconcileRun(shopDomain: string, runId: string) {
   const { admin } = await unauthenticated.admin(scoped.shopDomain);
   const operation = await fetchOperation(admin, run.shopifyOperationId);
   const mapped = terminalStatus(operation.status);
-  if (!mapped) return { status: operation.status, changed: false };
+  if (!mapped) {
+    const processedCount = Number(operation.objectCount);
+    if (processedCount > 0) {
+      const totalCount = (run.stats as { totalCount?: number } | null)?.totalCount ?? 0;
+      await scoped.taskRun.updateRunProgress(run.id, run.shopifyOperationId, processedCount, totalCount);
+    }
+    return { status: operation.status, changed: false };
+  }
 
   const summary = await resultSummary(operation);
   const finalStatus = mapped === "COMPLETED" && summary.failed > 0

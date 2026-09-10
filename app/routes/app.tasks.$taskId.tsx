@@ -127,6 +127,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         completedAt: run.completedAt?.toISOString() ?? null,
         changeCount: run._count.changes,
         canRollback: run.kind === "APPLY" && run.status === "COMPLETED",
+        stats: run.stats as { totalCount?: number; processedCount?: number } | null,
       })),
       latestChanges: (runDetail?.changes ?? []).map((change) => {
         const label = labels.get(change.resourceGid);
@@ -324,10 +325,6 @@ export default function TaskDetail() {
 
   const revertError = actionData && "revertError" in actionData ? actionData.revertError : null;
 
-  useEffect(() => {
-    if (navigation.state === "idle") setPendingIntent(null);
-  }, [navigation.state]);
-
   const hasActiveRun = task.runs.some((r) =>
     ["QUEUED", "PREPARING", "RUNNING"].includes(r.status),
   );
@@ -395,14 +392,22 @@ export default function TaskDetail() {
         </s-banner>
       )}
 
-      {hasActiveRun && (
-        <s-banner tone="info" heading="Bulk edit is running…">
-          <s-paragraph>
-            Shopify is processing your changes. This page refreshes
-            automatically — products will be updated in a minute or two.
-          </s-paragraph>
-        </s-banner>
-      )}
+      {hasActiveRun && (() => {
+        const activeRun = task.runs.find((r) =>
+          ["QUEUED", "PREPARING", "RUNNING"].includes(r.status),
+        );
+        const progress = activeRun?.stats?.totalCount
+          ? `${activeRun.stats.processedCount ?? 0} / ${activeRun.stats.totalCount} items processed.`
+          : null;
+        return (
+          <s-banner tone="info" heading="Bulk edit is running…">
+            <s-paragraph>
+              Shopify is processing your changes.{progress ? ` ${progress}` : ""}{" "}
+              This page refreshes automatically — products will be updated in a minute or two.
+            </s-paragraph>
+          </s-banner>
+        );
+      })()}
 
       <s-stack direction="block" gap="large">
         <s-section heading="Filters">

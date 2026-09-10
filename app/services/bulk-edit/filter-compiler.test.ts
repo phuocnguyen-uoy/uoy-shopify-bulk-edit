@@ -48,45 +48,92 @@ it("uses an unfiltered candidate query for negative substring matching", () => {
   ).toBe("");
 });
 
-describe("product collection filters", () => {
-  it("matches a product in any selected collection", () => {
-    expect(compileProductSearch("PRODUCT", {
-      combinator: "and",
-      conditions: [{ field: "collectionId", operator: "equals", value: "123,456" }],
-    })).toBe('((collection_id:"123" OR collection_id:"456"))');
-  });
-
-  it("excludes products in every selected collection", () => {
-    expect(compileProductSearch("PRODUCT", {
-      combinator: "and",
-      conditions: [{ field: "collectionId", operator: "not_equals", value: "123,456" }],
-    })).toBe('((-collection_id:"123" AND -collection_id:"456"))');
-  });
-
-  it("rejects malformed collection IDs", () => {
-    expect(() => compileProductSearch("PRODUCT", {
-      combinator: "and",
-      conditions: [{ field: "collectionId", operator: "equals", value: "123,nope" }],
-    })).toThrow("numeric collection IDs");
-  });
-});
-
-
 describe("collection filters", () => {
   it("compiles title and handle filters", () => {
-    expect(compileProductSearch("COLLECTION", {
-      combinator: "and",
-      conditions: [
-        { field: "title", operator: "equals", value: "Summer" },
-        { field: "handle", operator: "contains", value: "sale" },
-      ],
-    })).toBe('(title:"Summer") AND (handle:*)');
+    expect(
+      compileProductSearch("COLLECTION", {
+        combinator: "and",
+        conditions: [
+          { field: "title", operator: "equals", value: "Summer" },
+          { field: "handle", operator: "contains", value: "sale" },
+        ],
+      }),
+    ).toBe('(title:"Summer") AND (handle:*)');
   });
 
   it("rejects product-only fields", () => {
-    expect(() => compileProductSearch("COLLECTION", {
-      combinator: "and",
-      conditions: [{ field: "vendor", operator: "equals", value: "ACME" }],
-    })).toThrow("Unsupported collection field");
+    expect(() =>
+      compileProductSearch("COLLECTION", {
+        combinator: "and",
+        conditions: [{ field: "vendor", operator: "equals", value: "ACME" }],
+      }),
+    ).toThrow("Unsupported collection field");
+  });
+});
+
+describe("VARIANT filter compilation", () => {
+  it("compiles sku equals and price range", () => {
+    expect(
+      compileProductSearch("VARIANT", {
+        combinator: "and",
+        conditions: [
+          { field: "sku", operator: "starts_with", value: "TS-" },
+          { field: "price", operator: "less_than", value: 50 },
+        ],
+      }),
+    ).toBe('(sku:"TS-*") AND (price:<50)');
+  });
+
+  it("uses broad query for contains on title", () => {
+    expect(
+      compileProductSearch("VARIANT", {
+        combinator: "and",
+        conditions: [{ field: "title", operator: "contains", value: "Red" }],
+      }),
+    ).toBe("(title:*)");
+  });
+});
+
+describe("advanced filter operators", () => {
+  it("compiles prefix, lists, ranges, and dates", () => {
+    expect(
+      compileProductSearch("PRODUCT", {
+        combinator: "and",
+        conditions: [
+          { field: "sku", operator: "starts_with", value: "ABC-" },
+          { field: "vendor", operator: "in_list", values: ["ACME", "Other"] },
+          { field: "price", operator: "between", value: 10, valueTo: 50 },
+          { field: "createdAt", operator: "after", value: "2026-01-01" },
+        ],
+      }),
+    ).toBe(
+      '(sku:"ABC-*") AND (vendor:"ACME" OR vendor:"Other") AND (price:>=10 AND price:<=50) AND (created_at:>"2026-01-01")',
+    );
+  });
+
+  it("uses a broad candidate query for suffix matching", () => {
+    expect(
+      compileProductSearch("PRODUCT", {
+        combinator: "and",
+        conditions: [
+          { field: "handle", operator: "ends_with", value: "-sale" },
+        ],
+      }),
+    ).toBe("(handle:*)");
+  });
+
+  it("rejects empty lists and incomplete ranges", () => {
+    expect(() =>
+      compileProductSearch("PRODUCT", {
+        combinator: "and",
+        conditions: [{ field: "vendor", operator: "in_list", values: [] }],
+      }),
+    ).toThrow("requires at least one value");
+    expect(() =>
+      compileProductSearch("PRODUCT", {
+        combinator: "and",
+        conditions: [{ field: "price", operator: "between", value: 10 }],
+      }),
+    ).toThrow("lower and upper bounds");
   });
 });

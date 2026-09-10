@@ -12,14 +12,13 @@ import {
   useRouteError,
   useSubmit,
 } from "react-router";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { ResourceType } from "@prisma/client";
+import { MultiRuleBuilder } from "../components/MultiRuleBuilder";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
-import { DatePicker } from "../components/DatePicker";
-import { CollectionPicker } from "../components/CollectionPicker";
-
 import { compileProductSearch } from "../services/bulk-edit/filter-compiler";
+import { discoverTargetIds } from "../services/bulk-edit/target-discovery.server";
 import { executeRun } from "../services/jobs/execute.server";
 import { requireField } from "../services/bulk-edit/field-registry";
 import {
@@ -30,7 +29,6 @@ import {
 import type {
   EditAction,
   FilterDefinition,
-  FilterCondition,
   FilterOperator,
 } from "../services/tasks/types";
 import { authenticate } from "../shopify.server";
@@ -46,20 +44,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     prefill: {
       name: `${task.name} (Edited copy)`,
       resourceType: task.resourceType,
+      filters,
+      actions: actions.actions,
       filter: filters.conditions[0] ?? null,
       action: actions.actions[0] ?? null,
     },
   };
 };
 
-const VALUE_REQUIRED_OPERATORS = new Set<FilterOperator>([
-  "equals",
-  "not_equals",
-  "contains",
-  "not_contains",
-  "greater_than",
-  "less_than",
-]);
+function parseJson<T>(raw: FormDataEntryValue | null, label: string): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(String(raw)) as T;
+  } catch {
+    throw new Response(`Invalid ${label} JSON`, { status: 422 });
+  }
+}
 
 function readConfiguration(form: FormData) {
   const name = String(form.get("name") ?? "").trim();
@@ -67,227 +67,150 @@ function readConfiguration(form: FormData) {
   const resourceType = String(
     form.get("resourceType") ?? "PRODUCT",
   ) as ResourceType;
-  if (resourceType !== "PRODUCT" && resourceType !== "COLLECTION") {
+  if (
+    resourceType !== "PRODUCT" &&
+    resourceType !== "COLLECTION" &&
+    resourceType !== "VARIANT"
+  ) {
     throw new Response("Unsupported resource type", { status: 422 });
   }
-  const field = String(form.get("filterField") ?? "").trim();
-  const operator = String(form.get("filterOperator") ?? "") as FilterOperator;
-  const value = String(form.get("filterValue") ?? "").trim();
-  const actionField = String(form.get("actionField") ?? "").trim();
-  const operation = String(
-    form.get("operation") ?? "set",
-  ) as EditAction["operation"];
-  const actionValue = String(form.get("actionValue") ?? "");
-  const find = String(form.get("find") ?? "");
-  const replace = String(form.get("replace") ?? "");
-  const validOps = new Set([
-    "set", "clear", "find_replace", "add", "remove",
-    "increase_fixed", "decrease_fixed", "increase_percent", "decrease_percent",
-  ]);
-  if (!validOps.has(operation))
-    throw new Response("Unsupported edit operation", { status: 422 });
 
-  if (VALUE_REQUIRED_OPERATORS.has(operator) && !value) {
-    throw new Response("Filter value is required for the selected operator", {
+  const filters = parseJson<FilterDefinition>(
+    form.get("filtersJson"),
+    "filters",
+  ) ?? {
+    combinator: "and" as const,
+    conditions: [
+      {
+        field: String(form.get("filterField") ?? "").trim(),
+        operator: String(form.get("filterOperator") ?? "") as FilterOperator,
+        value: String(form.get("filterValue") ?? "").trim(),
+      },
+    ],
+  };
+  const actions = parseJson<{ actions: EditAction[] }>(
+    form.get("actionsJson"),
+    "actions",
+  ) ?? {
+    actions: [
+      {
+        field: String(form.get("actionField") ?? "").trim(),
+        operation: String(
+          form.get("operation") ?? "set",
+        ) as EditAction["operation"],
+        value: String(form.get("actionValue") ?? ""),
+        find: String(form.get("find") ?? ""),
+        replace: String(form.get("replace") ?? ""),
+      },
+    ],
+  };
+
+  if (
+    !["and", "or"].includes(filters.combinator) ||
+    !Array.isArray(filters.conditions) ||
+    filters.conditions.length < 1 ||
+    filters.conditions.length > 50
+  ) {
+    throw new Response("Add between 1 and 50 valid filter conditions", {
+      status: 422,
+    });
+  }
+  if (
+    !Array.isArray(actions.actions) ||
+    actions.actions.length < 1 ||
+    actions.actions.length > 50
+  ) {
+    throw new Response("Add between 1 and 50 valid edit actions", {
       status: 422,
     });
   }
 
-  requireField(resourceType, field);
-  const actionDefinition = requireField(resourceType, actionField);
-  if (!actionDefinition.editable)
-    throw new Response("Action field is read-only", { status: 422 });
-
-  const filters: FilterDefinition = {
-    combinator: "and",
-    conditions: [
-      { field, operator, ...(operator.startsWith("is_") ? {} : { value }) },
-    ],
-  };
-  if (operation === "find_replace" && !find) {
-    throw new Response("Find value is required", { status: 422 });
+  for (const condition of filters.conditions) {
+    if (
+      !condition ||
+      typeof condition.field !== "string" ||
+      typeof condition.operator !== "string"
+    ) {
+      throw new Response("Invalid filter condition", { status: 422 });
+    }
+    const definition = requireField(resourceType, condition.field);
+    if (!definition.filterOperators.includes(condition.operator)) {
+      throw new Response(
+        `Operator ${condition.operator} is invalid for ${condition.field}`,
+        { status: 422 },
+      );
+    }
+    const hasValue =
+      condition.value !== undefined && String(condition.value).trim() !== "";
+    const hasValues =
+      Array.isArray(condition.values) && condition.values.length > 0;
+    const hasUpper =
+      condition.valueTo !== undefined &&
+      String(condition.valueTo).trim() !== "";
+    if (
+      !condition.operator.startsWith("is_") &&
+      ((!hasValue && !hasValues) ||
+        (condition.operator === "between" && !hasUpper))
+    ) {
+      throw new Response(`Filter value is required for ${condition.field}`, {
+        status: 422,
+      });
+    }
   }
-  const action: EditAction =
-    operation === "find_replace"
-      ? { field: actionField, operation, find, replace }
-      : { field: actionField, operation, value: actionValue };
-  const actions = { actions: [action] };
+
+  const validOps = new Set([
+    "set",
+    "clear",
+    "find_replace",
+    "regex_replace",
+    "text_transform",
+    "add",
+    "remove",
+    "increase_fixed",
+    "decrease_fixed",
+    "increase_percent",
+    "decrease_percent",
+  ]);
+  for (const edit of actions.actions) {
+    if (
+      !edit ||
+      typeof edit.field !== "string" ||
+      !validOps.has(edit.operation)
+    ) {
+      throw new Response("Unsupported edit action", { status: 422 });
+    }
+    const definition = requireField(resourceType, edit.field);
+    if (!definition.editable)
+      throw new Response(`Action field is read-only: ${edit.field}`, {
+        status: 422,
+      });
+    if (
+      (edit.operation === "find_replace" ||
+        edit.operation === "regex_replace") &&
+      !edit.find
+    ) {
+      throw new Response("Find or regex pattern is required", { status: 422 });
+    }
+    if (edit.operation === "text_transform" && !edit.textTransform) {
+      throw new Response("Text transform is required", { status: 422 });
+    }
+  }
+  if (resourceType === "PRODUCT") {
+    const scopes = new Set(
+      actions.actions.map((edit) =>
+        edit.field.startsWith("variant") ? "variant" : "product",
+      ),
+    );
+    if (scopes.size > 1) {
+      throw new Response(
+        "A task cannot mix product and variant actions. Create separate tasks so preview, execution, and rollback stay consistent.",
+        { status: 422 },
+      );
+    }
+  }
   return { name, resourceType, filters, actions };
 }
 
-// Fields that can be post-filtered server-side for true substring matching.
-// Shopify doesn't support leading wildcards, so "contains" must be verified after fetch.
-const SUBSTRING_FILTER_FIELDS: Record<string, string> = {
-  title: "title",
-  vendor: "vendor",
-  productType: "productType",
-  handle: "handle",
-  tags: "tags",
-  sku: "sku",
-  barcode: "barcode",
-};
-
-type PreviewNode = {
-  id: string;
-  title: string;
-  vendor: string;
-  productType: string;
-  handle: string;
-  tags: string[];
-  variants: { nodes: Array<{ sku: string | null; barcode: string | null }> };
-};
-
-function applyContainsPostFilter(
-  nodes: PreviewNode[],
-  conditions: FilterCondition[],
-) {
-  const substringConds = conditions.filter(
-    (c) =>
-      (c.operator === "contains" || c.operator === "not_contains") &&
-      c.field in SUBSTRING_FILTER_FIELDS,
-  );
-  if (substringConds.length === 0) return nodes;
-  return nodes.filter((node) =>
-    substringConds.every((cond) => {
-      const searchVal = String(cond.value ?? "").toLowerCase();
-      const values =
-        cond.field === "sku" || cond.field === "barcode"
-          ? node.variants.nodes.map((variant) => variant[cond.field as "sku" | "barcode"] ?? "")
-          : cond.field === "tags"
-            ? node.tags
-            : [String(node[SUBSTRING_FILTER_FIELDS[cond.field] as keyof PreviewNode] ?? "")];
-      const matches = values.some((value) =>
-        String(value).toLowerCase().includes(searchVal),
-      );
-      return cond.operator === "contains" ? matches : !matches;
-    }),
-  );
-}
-
-async function affectedCount(
-  admin: Awaited<ReturnType<typeof authenticate.admin>>["admin"],
-  resourceType: ResourceType,
-  query: string,
-  filterConditions: FilterCondition[],
-) {
-  const response = await admin.graphql(
-    `#graphql
-    query PreviewAffectedProducts($query: String!) {
-      productsCount(query: $query) { count precision }
-      products(first: 250, query: $query) {
-        nodes {
-          id title vendor productType handle tags
-          variants(first: 250) { nodes { sku barcode } }
-        }
-        pageInfo { hasNextPage }
-      }
-    }
-  `,
-    { variables: { query } },
-  );
-  if (!response.ok)
-    throw new Response("Shopify preview request failed", { status: 502 });
-  const body = (await response.json()) as {
-    data?: {
-      productsCount?: { count: number; precision: string };
-      products?: {
-        nodes: PreviewNode[];
-        pageInfo: { hasNextPage: boolean };
-      };
-    };
-    errors?: Array<{ message: string }>;
-  };
-  if (body.errors?.length)
-    throw new Response(body.errors.map((e) => e.message).join("; "), {
-      status: 422,
-    });
-  const result = body.data?.productsCount;
-  const products = body.data?.products;
-  if (!result || !products)
-    throw new Response("Shopify returned incomplete preview data", {
-      status: 502,
-    });
-  if (products.pageInfo.hasNextPage || result.count > 250) {
-    throw new Response("MVP supports at most 250 products per frozen task", {
-      status: 422,
-    });
-  }
-  const matched = applyContainsPostFilter(products.nodes, filterConditions);
-  if (matched.length === 0)
-    throw new Response("No products match this filter", { status: 422 });
-  return {
-    count: matched.length,
-    precision: matched.length === result.count ? result.precision : "EXACT",
-    resourceIds: matched.map((p) => p.id),
-  };
-}
-
-type CollectionPreviewNode = { id: string; title: string; handle: string };
-
-function applyCollectionContainsPostFilter(nodes: CollectionPreviewNode[], conditions: FilterCondition[]) {
-  const substringConds = conditions.filter(
-    (c) => (c.operator === "contains" || c.operator === "not_contains") && (c.field === "title" || c.field === "handle"),
-  );
-  if (substringConds.length === 0) return nodes;
-  return nodes.filter((node) =>
-    substringConds.every((cond) => {
-      const searchVal = String(cond.value ?? "").toLowerCase();
-      const value = String(node[cond.field as "title" | "handle"] ?? "").toLowerCase();
-      const matches = value.includes(searchVal);
-      return cond.operator === "contains" ? matches : !matches;
-    }),
-  );
-}
-
-async function affectedCollectionsCount(
-  admin: Awaited<ReturnType<typeof authenticate.admin>>["admin"],
-  query: string,
-  filterConditions: FilterCondition[],
-) {
-  const response = await admin.graphql(
-    `#graphql
-    query PreviewAffectedCollections($query: String!) {
-      collectionsCount(query: $query) { count precision }
-      collections(first: 250, query: $query) {
-        nodes { id title handle }
-        pageInfo { hasNextPage }
-      }
-    }`,
-    { variables: { query } },
-  );
-  if (!response.ok) throw new Response("Shopify collection preview request failed", { status: 502 });
-  const body = (await response.json()) as {
-    data?: {
-      collectionsCount?: { count: number; precision: string };
-      collections?: { nodes: CollectionPreviewNode[]; pageInfo: { hasNextPage: boolean } };
-    };
-    errors?: Array<{ message: string }>;
-  };
-  if (body.errors?.length) throw new Response(body.errors.map((e) => e.message).join("; "), { status: 422 });
-  const result = body.data?.collectionsCount;
-  const collections = body.data?.collections;
-  if (!result || !collections) throw new Response("Shopify returned incomplete collection preview data", { status: 502 });
-  if (collections.pageInfo.hasNextPage || result.count > 250) {
-    throw new Response("MVP supports at most 250 collections per frozen task", { status: 422 });
-  }
-  const matched = applyCollectionContainsPostFilter(collections.nodes, filterConditions);
-  if (matched.length === 0) throw new Response("No collections match this filter", { status: 422 });
-  return {
-    count: matched.length,
-    precision: matched.length === result.count ? result.precision : "EXACT",
-    resourceIds: matched.map((c) => c.id),
-  };
-}
-
-async function previewResources(
-  admin: Awaited<ReturnType<typeof authenticate.admin>>["admin"],
-  resourceType: string,
-  query: string,
-  filterConditions: FilterCondition[],
-) {
-  if (resourceType === "COLLECTION") return affectedCollectionsCount(admin, query, filterConditions);
-  return affectedCount(admin, resourceType as "PRODUCT", query, filterConditions);
-}
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -295,13 +218,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = form.get("intent");
   try {
     const configuration = readConfiguration(form);
-    const query = compileProductSearch(configuration.resourceType, configuration.filters);
+    const query = compileProductSearch(
+      configuration.resourceType,
+      configuration.filters,
+    );
 
     if (intent === "create" || intent === "run") {
-      const rawIds = String(form.get("frozenIds") ?? "").trim();
-      const frozenResourceIds = rawIds
-        ? rawIds.split(",").filter(Boolean)
-        : (await previewResources(admin, configuration.resourceType, query, configuration.filters.conditions)).resourceIds;
+      const frozenResourceIds = await discoverTargetIds(
+        admin,
+        configuration.resourceType,
+        query,
+        configuration.filters,
+      );
+      if (frozenResourceIds.length === 0) {
+        throw new Response("No resources match this filter", { status: 422 });
+      }
 
       const task = await createDraftTask(session.shop, {
         ...configuration,
@@ -314,8 +245,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return redirect(`/app/tasks/${task.id}`);
     }
 
-    const preview = await previewResources(admin, configuration.resourceType, query, configuration.filters.conditions);
-    return { preview, query };
+    const resourceIds = await discoverTargetIds(
+      admin,
+      configuration.resourceType,
+      query,
+      configuration.filters,
+    );
+    if (resourceIds.length === 0) {
+      throw new Response("No resources match this filter", { status: 422 });
+    }
+    return { preview: { count: resourceIds.length } };
   } catch (e) {
     if (e instanceof Response) {
       const message = await e.text();
@@ -324,104 +263,156 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     throw e;
   }
 };
-
 // ── Client-side field metadata ────────────────────────────────────────────────
 
-type UiKind = "string" | "string_list" | "number" | "date" | "status" | "boolean" | "collection_picker";
+type UiKind =
+  "string" | "string_list" | "number" | "date" | "status" | "boolean";
 
 const PRODUCT_FILTER_FIELDS: { value: string; label: string; kind: UiKind }[] =
   [
     // Product fields
-    { value: "title",                 label: "Product title",               kind: "string" },
-    { value: "vendor",                label: "Product vendor",              kind: "string" },
-    { value: "productType",           label: "Product type",                kind: "string" },
-    { value: "status",                label: "Product status",              kind: "status" },
-    { value: "tags",                  label: "Product tags",                kind: "string_list" },
-    { value: "handle",                label: "Product URL handle",          kind: "string" },
-    { value: "collectionId",          label: "Product collection",          kind: "collection_picker" },
-    { value: "totalInventory",        label: "Product total inventory",     kind: "number" },
-    { value: "variantsCount",         label: "Product variants count",      kind: "number" },
-    { value: "publishedAt",           label: "Product published at",        kind: "date" },
-    { value: "createdAt",             label: "Product created at",          kind: "date" },
-    { value: "updatedAt",             label: "Product updated at",          kind: "date" },
-    { value: "publishedStatus",       label: "Product published status",    kind: "status" },
-    { value: "hasOnlyDefaultVariant", label: "Has only default variant",    kind: "boolean" },
-    { value: "isGiftCard",            label: "Is gift card",                kind: "boolean" },
-    { value: "hasOutOfStockVariants", label: "Has out-of-stock variants",   kind: "boolean" },
-    { value: "requiresSellingPlan",   label: "Requires subscription",       kind: "boolean" },
-    { value: "variantTaxable",        label: "Variant is taxable",           kind: "boolean" },
+    { value: "title", label: "Product title", kind: "string" },
+    { value: "vendor", label: "Product vendor", kind: "string" },
+    { value: "productType", label: "Product type", kind: "string" },
+    { value: "status", label: "Product status", kind: "status" },
+    { value: "tags", label: "Product tags", kind: "string_list" },
+    { value: "handle", label: "Product URL handle", kind: "string" },
+    { value: "collectionId", label: "Product collection", kind: "string" },
+    {
+      value: "totalInventory",
+      label: "Product total inventory",
+      kind: "number",
+    },
+    { value: "variantsCount", label: "Product variants count", kind: "number" },
+    { value: "publishedAt", label: "Product published at", kind: "date" },
+    { value: "createdAt", label: "Product created at", kind: "date" },
+    { value: "updatedAt", label: "Product updated at", kind: "date" },
+    {
+      value: "publishedStatus",
+      label: "Product published status",
+      kind: "status",
+    },
+    {
+      value: "hasOnlyDefaultVariant",
+      label: "Has only default variant",
+      kind: "boolean",
+    },
+    { value: "isGiftCard", label: "Is gift card", kind: "boolean" },
+    {
+      value: "hasOutOfStockVariants",
+      label: "Has out-of-stock variants",
+      kind: "boolean",
+    },
+    {
+      value: "requiresSellingPlan",
+      label: "Requires subscription",
+      kind: "boolean",
+    },
+    { value: "variantTaxable", label: "Variant is taxable", kind: "boolean" },
     // Variant fields (filterable via Shopify product search)
-    { value: "sku",                   label: "Variant SKU",                 kind: "string" },
-    { value: "barcode",               label: "Variant barcode",             kind: "string" },
-    { value: "price",                 label: "Variant price",               kind: "number" },
+    { value: "variantTitle", label: "Variant title", kind: "string" },
+    { value: "sku", label: "Variant SKU", kind: "string" },
+    { value: "barcode", label: "Variant barcode", kind: "string" },
+    { value: "price", label: "Variant price", kind: "number" },
   ];
 
 const PRODUCT_ACTION_FIELDS: { value: string; label: string; kind: UiKind }[] =
   [
-    { value: "title",           label: "Title",                kind: "string" },
-    { value: "descriptionHtml", label: "Description (HTML)",  kind: "string" },
-    { value: "vendor",          label: "Vendor",               kind: "string" },
-    { value: "productType",     label: "Product type",         kind: "string" },
-    { value: "status",          label: "Status",               kind: "status" },
-    { value: "tags",            label: "Tags",                 kind: "string_list" },
-    { value: "handle",          label: "URL handle",           kind: "string" },
-    { value: "seoTitle",        label: "SEO page title",       kind: "string" },
-    { value: "seoDescription",  label: "SEO meta description", kind: "string" },
-    { value: "templateSuffix",  label: "Product · Theme template suffix", kind: "string" },
-    { value: "variantPrice",          label: "Variant · Price", kind: "number" },
-    { value: "variantCompareAtPrice", label: "Variant · Compare-at price", kind: "number" },
-    { value: "variantSku",            label: "Variant · SKU", kind: "string" },
-    { value: "variantBarcode",        label: "Variant · Barcode", kind: "string" },
-    { value: "variantTaxable",        label: "Variant · Is taxable", kind: "boolean" },
-    { value: "variantWeight",         label: "Variant · Weight", kind: "number" },
-    { value: "variantWeightUnit",     label: "Variant · Weight unit", kind: "status" },
-    { value: "variantRequiresShipping", label: "Variant · Requires shipping", kind: "boolean" },
-    { value: "variantInventoryPolicy", label: "Variant · Out-of-stock policy", kind: "status" },
-    { value: "variantCostPerItem",    label: "Variant · Cost per item", kind: "number" },
+    { value: "title", label: "Title", kind: "string" },
+    { value: "descriptionHtml", label: "Description (HTML)", kind: "string" },
+    { value: "vendor", label: "Vendor", kind: "string" },
+    { value: "productType", label: "Product type", kind: "string" },
+    { value: "status", label: "Status", kind: "status" },
+    { value: "tags", label: "Tags", kind: "string_list" },
+    { value: "handle", label: "URL handle", kind: "string" },
+    { value: "seoTitle", label: "SEO page title", kind: "string" },
+    { value: "seoDescription", label: "SEO meta description", kind: "string" },
+    {
+      value: "templateSuffix",
+      label: "Product · Theme template suffix",
+      kind: "string",
+    },
+    { value: "variantPrice", label: "Variant · Price", kind: "number" },
+    {
+      value: "variantCompareAtPrice",
+      label: "Variant · Compare-at price",
+      kind: "number",
+    },
+    { value: "variantSku", label: "Variant · SKU", kind: "string" },
+    { value: "variantBarcode", label: "Variant · Barcode", kind: "string" },
+    { value: "variantTaxable", label: "Variant · Is taxable", kind: "boolean" },
+    { value: "variantWeight", label: "Variant · Weight", kind: "number" },
+    {
+      value: "variantWeightUnit",
+      label: "Variant · Weight unit",
+      kind: "status",
+    },
+    {
+      value: "variantRequiresShipping",
+      label: "Variant · Requires shipping",
+      kind: "boolean",
+    },
+    {
+      value: "variantInventoryPolicy",
+      label: "Variant · Out-of-stock policy",
+      kind: "status",
+    },
+    {
+      value: "variantCostPerItem",
+      label: "Variant · Cost per item",
+      kind: "number",
+    },
   ];
 
-const VARIANT_FILTER_FIELDS: { value: string; label: string; kind: UiKind }[] = [
-  { value: "title", label: "Variant title", kind: "string" },
-  { value: "sku", label: "Variant SKU", kind: "string" },
-  { value: "barcode", label: "Variant barcode", kind: "string" },
-  { value: "price", label: "Variant price", kind: "number" },
-  { value: "taxable", label: "Variant is taxable", kind: "boolean" },
-];
+const VARIANT_FILTER_FIELDS: { value: string; label: string; kind: UiKind }[] =
+  [
+    { value: "title", label: "Variant title", kind: "string" },
+    { value: "sku", label: "Variant SKU", kind: "string" },
+    { value: "barcode", label: "Variant barcode", kind: "string" },
+    { value: "price", label: "Variant price", kind: "number" },
+    { value: "taxable", label: "Variant is taxable", kind: "boolean" },
+  ];
 
-const VARIANT_ACTION_FIELDS: { value: string; label: string; kind: UiKind }[] = [
-  { value: "price", label: "Variant price", kind: "number" },
-  { value: "compareAtPrice", label: "Variant compare-at price", kind: "number" },
-  { value: "sku", label: "Variant SKU", kind: "string" },
-  { value: "barcode", label: "Variant barcode", kind: "string" },
-  { value: "inventoryPolicy", label: "Variant out-of-stock policy", kind: "status" },
-  { value: "requiresShipping", label: "Variant requires shipping", kind: "boolean" },
-  { value: "taxable", label: "Variant is taxable", kind: "boolean" },
-  { value: "weight", label: "Variant weight", kind: "number" },
-  { value: "weightUnit", label: "Variant weight unit", kind: "status" },
-  { value: "costPerItem", label: "Variant cost per item", kind: "number" },
-];
+const VARIANT_ACTION_FIELDS: { value: string; label: string; kind: UiKind }[] =
+  [
+    { value: "price", label: "Variant price", kind: "number" },
+    {
+      value: "compareAtPrice",
+      label: "Variant compare-at price",
+      kind: "number",
+    },
+    { value: "sku", label: "Variant SKU", kind: "string" },
+    { value: "barcode", label: "Variant barcode", kind: "string" },
+    {
+      value: "inventoryPolicy",
+      label: "Variant out-of-stock policy",
+      kind: "status",
+    },
+    { value: "taxable", label: "Variant is taxable", kind: "boolean" },
+  ];
 
-const COLLECTION_FILTER_FIELDS: { value: string; label: string; kind: UiKind }[] = [
+const COLLECTION_FILTER_FIELDS: {
+  value: string;
+  label: string;
+  kind: UiKind;
+}[] = [
   { value: "title", label: "Collection title", kind: "string" },
   { value: "handle", label: "Collection URL handle", kind: "string" },
-  { value: "updatedAt", label: "Collection updated at", kind: "date" },
 ];
 
-const COLLECTION_ACTION_FIELDS: { value: string; label: string; kind: UiKind }[] = [
-  { value: "title", label: "Title", kind: "string" },
-  { value: "descriptionHtml", label: "Description (HTML)", kind: "string" },
-  { value: "handle", label: "URL handle", kind: "string" },
-  { value: "seoTitle", label: "SEO page title", kind: "string" },
-  { value: "seoDescription", label: "SEO meta description", kind: "string" },
-  { value: "templateSuffix", label: "Theme template suffix", kind: "string" },
+const COLLECTION_ACTION_FIELDS: {
+  value: string;
+  label: string;
+  kind: UiKind;
+}[] = [
+  { value: "title", label: "Collection title", kind: "string" },
+  {
+    value: "descriptionHtml",
+    label: "Collection description HTML",
+    kind: "string",
+  },
+  { value: "handle", label: "Collection URL handle", kind: "string" },
 ];
-
-type ActionResult =
-  | {
-      preview: { count: number; precision: string; resourceIds: string[] };
-      query: string;
-    }
-  | { error: string };
 
 export default function NewTask() {
   const { prefill } = useLoaderData<typeof loader>();
@@ -431,72 +422,35 @@ export default function NewTask() {
   const busy = navigation.state !== "idle";
   const [pendingIntent, setPendingIntent] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
-
-  useEffect(() => {
-    if (navigation.state === "idle") setPendingIntent(null);
-  }, [navigation.state]);
-
   const [resourceType, setResourceType] = useState<ResourceType>(
     prefill?.resourceType ?? "PRODUCT",
   );
-  const [filterField, setFilterField] = useState(prefill?.filter?.field ?? "title");
-  const [filterOperator, setFilterOperator] = useState(
-    prefill?.filter?.operator ?? "contains",
-  );
-  const [actionField, setActionField] = useState(prefill?.action?.field ?? "title");
-  const [operation, setOperation] = useState(
-    prefill?.action?.operation ?? "set",
-  );
-  const [filterValue, setFilterValue] = useState(
-    String(prefill?.filter?.value ?? ""),
-  );
-  const [actionValue, setActionValue] = useState(
-    prefill?.action && prefill.action.operation !== "find_replace"
-      ? String(prefill.action.value ?? "")
-      : "",
-  );
 
-  const filterFields = resourceType === "PRODUCT" ? PRODUCT_FILTER_FIELDS : resourceType === "VARIANT" ? VARIANT_FILTER_FIELDS : COLLECTION_FILTER_FIELDS;
-  const actionFields = resourceType === "PRODUCT" ? PRODUCT_ACTION_FIELDS : resourceType === "VARIANT" ? VARIANT_ACTION_FIELDS : COLLECTION_ACTION_FIELDS;
+  const filterFields =
+    resourceType === "PRODUCT"
+      ? PRODUCT_FILTER_FIELDS
+      : resourceType === "VARIANT"
+        ? VARIANT_FILTER_FIELDS
+        : COLLECTION_FILTER_FIELDS;
+  const actionFields =
+    resourceType === "PRODUCT"
+      ? PRODUCT_ACTION_FIELDS
+      : resourceType === "VARIANT"
+        ? VARIANT_ACTION_FIELDS
+        : COLLECTION_ACTION_FIELDS;
 
-  const filterKind =
-    filterFields.find((f) => f.value === filterField)?.kind ?? "string";
-  const actionKind =
-    actionFields.find((f) => f.value === actionField)?.kind ?? "string";
   const supportedVariantActions = new Set([
-    "variantPrice", "variantCompareAtPrice", "variantSku", "variantBarcode",
-    "variantTaxable", "variantInventoryPolicy",
+    "variantPrice",
+    "variantCompareAtPrice",
+    "variantSku",
+    "variantBarcode",
+    "variantTaxable",
+    "variantInventoryPolicy",
   ]);
-  const isVariantAction = resourceType === "PRODUCT" && actionField.startsWith("variant");
-  const isPendingVariantAction = isVariantAction && !supportedVariantActions.has(actionField);
+  const isPendingVariantAction = false;
 
   const handleResourceTypeChange = (newType: ResourceType) => {
     setResourceType(newType);
-    const firstFilter = (newType === "PRODUCT" ? PRODUCT_FILTER_FIELDS : newType === "VARIANT" ? VARIANT_FILTER_FIELDS : COLLECTION_FILTER_FIELDS)[0]?.value ?? "title";
-    const firstAction = (newType === "PRODUCT" ? PRODUCT_ACTION_FIELDS : newType === "VARIANT" ? VARIANT_ACTION_FIELDS : COLLECTION_ACTION_FIELDS)[0]?.value ?? "title";
-    setFilterField(firstFilter);
-    setActionField(firstAction);
-    setFilterOperator("contains");
-    setOperation("set");
-    setFilterValue("");
-    setActionValue("");
-  };
-
-  const handleFilterFieldChange = (newField: string) => {
-    setFilterField(newField);
-    setFilterValue("");
-    const kind =
-      filterFields.find((f) => f.value === newField)?.kind ?? "string";
-    if (newField === "collectionId") setFilterOperator("equals");
-    else if (kind === "number" || kind === "date") setFilterOperator("greater_than");
-    else if (kind === "status" || kind === "boolean") setFilterOperator("equals");
-    else setFilterOperator("contains");
-  };
-
-  const handleActionFieldChange = (newField: string) => {
-    setActionField(newField);
-    setActionValue("");
-    setOperation("set");
   };
 
   const submitWithIntent = (intent: "preview" | "run" | "create") => {
@@ -542,350 +496,61 @@ export default function NewTask() {
                 label="Resource"
                 value={resourceType}
                 onChange={(event) => {
-                  handleResourceTypeChange(event.currentTarget.value as ResourceType);
+                  handleResourceTypeChange(
+                    event.currentTarget.value as ResourceType,
+                  );
                 }}
               >
                 <s-option value="PRODUCT">Products</s-option>
+                <s-option value="VARIANT">Product Variants</s-option>
                 <s-option value="COLLECTION">Collections</s-option>
               </s-select>
             </s-stack>
           </s-section>
 
-          {/* Filter products */}
-          <s-section heading={resourceType === "COLLECTION" ? "Filter collections" : "Filter products"}>
-            <s-stack direction="block" gap="base">
-              <s-paragraph>
-                Only {resourceType === "COLLECTION" ? "collections" : "products"} matching this condition will be included in the
-                bulk edit.
-              </s-paragraph>
-              <s-grid
-                gridTemplateColumns="repeat(auto-fit, minmax(220px, 1fr))"
-                gap="base"
-              >
-                {/* Field selector */}
-                <s-select
-                  key={`filter-field-${resourceType}`}
-                  name="filterField"
-                  label="Field"
-                  value={filterField}
-                  onChange={(event) =>
-                    handleFilterFieldChange(event.currentTarget.value)
-                  }
-                >
-                  {filterFields.map((f) => (
-                    <s-option key={f.value} value={f.value}>
-                      {f.label}
-                    </s-option>
-                  ))}
-                </s-select>
-
-                {/* Condition / operator */}
-                <s-select
-                  name="filterOperator"
-                  label="Condition"
-                  value={filterOperator}
-                  onChange={(event) =>
-                    setFilterOperator(
-                      event.currentTarget.value as FilterOperator,
-                    )
-                  }
-                >
-                  {filterField === "collectionId" ? (
-                    <>
-                      <s-option value="equals">Is in any of</s-option>
-                      <s-option value="not_equals">Is not in any of</s-option>
-                    </>
-                  ) : filterKind === "number" || filterKind === "date" ? (
-                    <>
-                      <s-option value="greater_than">
-                        {filterKind === "date" ? "After" : "Greater than"}
-                      </s-option>
-                      <s-option value="less_than">
-                        {filterKind === "date" ? "Before" : "Less than"}
-                      </s-option>
-                      <s-option value="equals">Equals</s-option>
-                      <s-option value="not_equals">Does not equal</s-option>
-                      <s-option value="is_empty">Is empty</s-option>
-                      <s-option value="is_not_empty">Is not empty</s-option>
-                    </>
-                  ) : filterKind === "status" || filterKind === "boolean" ? (
-                    <>
-                      <s-option value="equals">Is</s-option>
-                      <s-option value="not_equals">Is not</s-option>
-                    </>
-                  ) : (
-                    <>
-                      <s-option value="contains">Contains</s-option>
-                      <s-option value="equals">Equals</s-option>
-                      <s-option value="not_contains">Does not contain</s-option>
-                      <s-option value="not_equals">Does not equal</s-option>
-                      <s-option value="is_empty">Is empty</s-option>
-                      <s-option value="is_not_empty">Is not empty</s-option>
-                    </>
-                  )}
-                </s-select>
-
-                {/* Filter value input — varies by field kind */}
-                {filterKind === "status" && filterField === "status" ? (
-                  <s-select
-                    name="filterValue"
-                    label="Value"
-                    value={filterValue || "ACTIVE"}
-                    onChange={(event) => setFilterValue(event.currentTarget.value)}
-                  >
-                    <s-option value="ACTIVE">Active</s-option>
-                    <s-option value="DRAFT">Draft</s-option>
-                    <s-option value="ARCHIVED">Archived</s-option>
-                  </s-select>
-                ) : filterKind === "status" && filterField === "publishedStatus" ? (
-                  <s-select
-                    name="filterValue"
-                    label="Value"
-                    value={filterValue || "published"}
-                    onChange={(event) => setFilterValue(event.currentTarget.value)}
-                  >
-                    <s-option value="published">Published</s-option>
-                    <s-option value="unpublished">Unpublished</s-option>
-                  </s-select>
-                ) : filterKind === "boolean" ? (
-                  <s-select
-                    name="filterValue"
-                    label="Value"
-                    value={filterValue || "true"}
-                    onChange={(event) => setFilterValue(event.currentTarget.value)}
-                  >
-                    <s-option value="true">True</s-option>
-                    <s-option value="false">False</s-option>
-                  </s-select>
-                ) : filterKind === "date" ? (
-                  <DatePicker
-                    name="filterValue"
-                    label="Date"
-                    defaultValue={String(prefill?.filter?.value ?? "")}
-                  />
-                ) : filterKind === "number" ? (
-                  <s-text-field
-                    key={`${resourceType}-${filterField}`}
-                    name="filterValue"
-                    label="Value"
-                    placeholder="0"
-                    details="Enter a numeric value."
-                    defaultValue={String(prefill?.filter?.value ?? "")}
-                  />
-                ) : filterKind === "collection_picker" ? (
-                  <CollectionPicker
-                    key={`${resourceType}-${filterField}`}
-                    name="filterValue"
-                    label="Collections"
-                    defaultValue={String(prefill?.filter?.value ?? "")}
-                    hint="Select one or more collections. Products in any selected collection will be included."
-                  />
-                ) : (
-                  <s-text-field
-                    key={`${resourceType}-${filterField}`}
-                    name="filterValue"
-                    label="Value"
-                    placeholder={
-                      filterField === "tags"
-                        ? "Example: summer"
-                        : filterField === "handle"
-                          ? "Example: my-product"
-                          : filterField === "sku"
-                            ? "Example: SKU-001"
-                            : "Example: value"
-                    }
-                    defaultValue={String(prefill?.filter?.value ?? "")}
-                  />
-                )}
-              </s-grid>
-            </s-stack>
-          </s-section>
-
-          {/* Define the edit */}
-          <s-section heading="Define the edit">
-            <s-stack direction="block" gap="base">
-              <s-grid
-                gridTemplateColumns="repeat(auto-fit, minmax(220px, 1fr))"
-                gap="base"
-              >
-                {/* Action field */}
-                <s-select
-                  key={`action-field-${resourceType}`}
-                  name="actionField"
-                  label="Field to edit"
-                  value={actionField}
-                  onChange={(event) =>
-                    handleActionFieldChange(event.currentTarget.value)
-                  }
-                >
-                  {actionFields.map((f) => (
-                    <s-option key={f.value} value={f.value}>
-                      {f.label}
-                    </s-option>
-                  ))}
-                </s-select>
-
-                {/* Operation */}
-                <s-select
-                  name="operation"
-                  label="Operation"
-                  value={operation}
-                  onChange={(event) =>
-                    setOperation(
-                      event.currentTarget.value as EditAction["operation"],
-                    )
-                  }
-                >
-                  {actionKind === "string_list" ? (
-                    <>
-                      <s-option value="set">Set (replace all)</s-option>
-                      <s-option value="clear">Clear all</s-option>
-                      <s-option value="add">Add tag</s-option>
-                      <s-option value="remove">Remove tag</s-option>
-                    </>
-                  ) : actionKind === "status" ? (
-                    <s-option value="set">Set status</s-option>
-                  ) : (
-                    <>
-                      <s-option value="set">Set value</s-option>
-                      <s-option value="clear">Clear value</s-option>
-                      <s-option value="find_replace">Find and replace</s-option>
-                      <s-option value="add">Append text</s-option>
-                      <s-option value="remove">Remove text</s-option>
-                    </>
-                  )}
-                </s-select>
-              </s-grid>
-
-              {isVariantAction && !isPendingVariantAction && (
-                <s-banner tone="info" heading="Applies to all variants of matched products">
-                  <s-paragraph>Each variant will be snapshotted separately so this edit can be reverted safely.</s-paragraph>
-                </s-banner>
-              )}
-
-              {isPendingVariantAction && (
-                <s-banner tone="warning" heading="Variant bulk edit coming soon">
-                  <s-paragraph>
-                    Variant fields are shown for planning. Preview and Apply will be enabled once the variant executor passes E2E testing.
-                  </s-paragraph>
-                </s-banner>
-              )}
-
-              {/* Action value — varies by operation and field kind */}
-              {operation === "find_replace" ? (
-                <s-grid
-                  gridTemplateColumns="repeat(auto-fit, minmax(220px, 1fr))"
-                  gap="base"
-                >
-                  <s-text-field
-                    name="find"
-                    label="Find"
-                    defaultValue={
-                      prefill?.action?.operation === "find_replace"
-                        ? prefill.action.find
-                        : ""
-                    }
-                    required
-                  />
-                  <s-text-field
-                    name="replace"
-                    label="Replace with"
-                    defaultValue={
-                      prefill?.action?.operation === "find_replace"
-                        ? prefill.action.replace
-                        : ""
-                    }
-                  />
-                </s-grid>
-              ) : operation !== "clear" ? (
-                actionField === "status" ? (
-                  <s-select
-                    name="actionValue"
-                    label="New status"
-                    value={actionValue || "ACTIVE"}
-                    onChange={(event) => setActionValue(event.currentTarget.value)}
-                  >
-                    <s-option value="ACTIVE">Active</s-option>
-                    <s-option value="DRAFT">Draft</s-option>
-                    <s-option value="ARCHIVED">Archived</s-option>
-                  </s-select>
-                ) : actionField === "variantInventoryPolicy" ? (
-                  <s-select
-                    name="actionValue"
-                    label="Out-of-stock policy"
-                    value={actionValue || "DENY"}
-                    onChange={(event) => setActionValue(event.currentTarget.value)}
-                  >
-                    <s-option value="DENY">Stop selling when out of stock</s-option>
-                    <s-option value="CONTINUE">Continue selling when out of stock</s-option>
-                  </s-select>
-                ) : actionKind === "boolean" ? (
-                  <s-select
-                    name="actionValue"
-                    label="New value"
-                    value={actionValue || "true"}
-                    onChange={(event) => setActionValue(event.currentTarget.value)}
-                  >
-                    <s-option value="true">True</s-option>
-                    <s-option value="false">False</s-option>
-                  </s-select>
-                ) : (
-                  <s-text-field
-                    key={`${resourceType}-${actionField}-${operation}`}
-                    name="actionValue"
-                    label={
-                      operation === "add"
-                        ? actionKind === "string_list"
-                          ? "Tag to add"
-                          : "Text to append"
-                        : operation === "remove"
-                          ? actionKind === "string_list"
-                            ? "Tag to remove"
-                            : "Text to remove"
-                          : "New value"
-                    }
-                    placeholder={
-                      actionField === "tags"
-                        ? "Example: summer"
-                        : actionField === "handle"
-                          ? "new-url-handle"
-                          : actionField === "templateSuffix"
-                            ? "custom"
-                            : "Enter value"
-                    }
-                    defaultValue={
-                      prefill?.action &&
-                      prefill.action.operation !== "find_replace"
-                        ? String(prefill.action.value ?? "")
-                        : ""
-                    }
-                    required
-                  />
-                )
-              ) : null}
-            </s-stack>
-          </s-section>
-
+          <MultiRuleBuilder
+            key={resourceType}
+            filterFields={filterFields}
+            actionFields={actionFields.filter(
+              (field) =>
+                !field.value.startsWith("variant") ||
+                supportedVariantActions.has(field.value),
+            )}
+            initialFilters={
+              resourceType === prefill?.resourceType
+                ? prefill.filters
+                : undefined
+            }
+            initialActions={
+              resourceType === prefill?.resourceType
+                ? prefill.actions
+                : undefined
+            }
+          />
           {/* Review and apply */}
           <s-section heading="Review and apply">
-            {preview && (
-              <input
-                type="hidden"
-                name="frozenIds"
-                value={preview.resourceIds.join(",")}
-              />
-            )}
             {isPendingVariantAction && (
-              <s-banner tone="warning" heading="Variant field executor coming soon">
+              <s-banner
+                tone="warning"
+                heading="Variant field executor coming soon"
+              >
                 <s-paragraph>
-                  Editing variant fields across all matched products requires a separate executor path. Preview and Apply are disabled until this passes end-to-end testing.
+                  Editing variant fields across all matched products requires a
+                  separate executor path. Preview and Apply are disabled until
+                  this passes end-to-end testing.
                 </s-paragraph>
               </s-banner>
             )}
             {!isPendingVariantAction && preview ? (
               <s-banner
                 tone="success"
-                heading={`${preview.count} ${resourceType === "COLLECTION" ? `collection${preview.count === 1 ? "" : "s"}` : `product${preview.count === 1 ? "" : "s"}`} matched`}
+                heading={`${preview.count} ${
+                resourceType === "COLLECTION"
+                  ? `collection${preview.count === 1 ? "" : "s"}`
+                  : resourceType === "VARIANT"
+                    ? `variant${preview.count === 1 ? "" : "s"}`
+                    : `product${preview.count === 1 ? "" : "s"}`
+              } matched`}
               >
                 <s-paragraph>
                   Ready to edit. Click Apply Bulk Edit to run immediately, or
@@ -894,9 +559,17 @@ export default function NewTask() {
               </s-banner>
             ) : !isPendingVariantAction ? (
               <s-paragraph>
-                Preview the selection first. No {resourceType === "COLLECTION" ? "collection" : "product"} data changes during this step.
+                Preview the selection first. No{" "}
+                {resourceType === "COLLECTION"
+                  ? "collection"
+                  : resourceType === "VARIANT"
+                    ? "variant"
+                    : "product"}{" "}
+                data changes during this step.
               </s-paragraph>
             ) : null}
+
+
             <s-stack direction="inline" gap="base">
               <s-button
                 type="button"
@@ -904,7 +577,15 @@ export default function NewTask() {
                 disabled={busy || isPendingVariantAction}
                 loading={isLoading("preview")}
               >
-                {isLoading("preview") ? "Checking…" : resourceType === "COLLECTION" ? "Preview collections" : "Preview products"}
+                {isLoading("preview")
+                  ? "Checking…"
+                  : `Preview ${
+                      resourceType === "COLLECTION"
+                        ? "collections"
+                        : resourceType === "VARIANT"
+                          ? "variants"
+                          : "products"
+                    }`}
               </s-button>
               {!isPendingVariantAction && preview && (
                 <>

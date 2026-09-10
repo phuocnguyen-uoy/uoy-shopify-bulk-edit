@@ -11,9 +11,10 @@ interface Props {
   label?: string;
   defaultValue?: string;
   hint?: string;
+  onChange?: (ids: string) => void;
 }
 
-export function CollectionPicker({ name, label, defaultValue = "", hint }: Props) {
+export function CollectionPicker({ name, label, defaultValue = "", hint, onChange }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [options, setOptions] = useState<Collection[]>([]);
@@ -81,16 +82,18 @@ export function CollectionPicker({ name, label, defaultValue = "", hint }: Props
   };
 
   const toggle = (collection: Collection) => {
-    setSelected((prev) =>
-      prev.some((c) => c.id === collection.id)
-        ? prev.filter((c) => c.id !== collection.id)
-        : [...prev, collection],
-    );
+    const next = selected.some((c) => c.id === collection.id)
+      ? selected.filter((c) => c.id !== collection.id)
+      : [...selected, collection];
+    setSelected(next);
+    onChange?.(next.map((c) => c.id).join(","));
   };
 
   const removeSelected = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setSelected((prev) => prev.filter((c) => c.id !== id));
+    const next = selected.filter((c) => c.id !== id);
+    setSelected(next);
+    onChange?.(next.map((c) => c.id).join(","));
   };
 
   // Close on outside click
@@ -153,9 +156,18 @@ export function CollectionPicker({ name, label, defaultValue = "", hint }: Props
 
       {/* Combined tag + search input box */}
       <div
+        role="button"
+        tabIndex={0}
         onClick={() => {
           openDropdown();
           inputRef.current?.focus();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openDropdown();
+            inputRef.current?.focus();
+          }
         }}
         style={{
           display: "flex",
@@ -262,10 +274,8 @@ export function CollectionPicker({ name, label, defaultValue = "", hint }: Props
             options.map((c) => {
               const checked = selectedIds.has(c.id);
               return (
-                <label
+                <div
                   key={c.id}
-                  onMouseDown={(e) => e.preventDefault()} // keep focus in search input
-                  onClick={() => toggle(c)}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -278,16 +288,18 @@ export function CollectionPicker({ name, label, defaultValue = "", hint }: Props
                   }}
                 >
                   <input
+                    id={"collection-option-" + c.id.replace(/\W/g, "-")}
                     type="checkbox"
+                    aria-label={"Select " + c.title}
                     checked={checked}
-                    onChange={() => {}} // controlled via label onClick
+                    onChange={() => toggle(c)}
                     style={{ margin: 0, flexShrink: 0, cursor: "pointer" }}
                   />
                   <div>
                     <div style={{ fontSize: "14px", color: "#202223" }}>{c.title}</div>
                     <div style={{ fontSize: "12px", color: "#6d7175" }}>/{c.handle}</div>
                   </div>
-                </label>
+                </div>
               );
             })
           )}
@@ -307,7 +319,7 @@ export function CollectionPicker({ name, label, defaultValue = "", hint }: Props
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={() => setSelected([])}
+                onClick={() => { setSelected([]); onChange?.(""); }}
                 style={{
                   border: "none",
                   background: "none",

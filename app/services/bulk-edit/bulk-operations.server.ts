@@ -131,6 +131,7 @@ export async function stageAndRunForTask(
   const attached = await tenantDb(db, shopDomain).taskRun.attachShopifyOperation(
     taskRunId,
     operation.id,
+    rows.length,
   );
   if (attached.count !== 1) {
     throw new Error(

@@ -24,12 +24,14 @@ export async function scheduleTask(
 
   const updated = await tenantDb(db, shopDomain).task.schedule(taskId, {
     status: "SCHEDULED",
+    selectionMode: input.recurringCron ? "DYNAMIC" : "FROZEN",
     scheduledAt: input.runAt,
     recurringCron: input.recurringCron ?? null,
     timezone: input.timezone,
     nextRunAt: input.runAt,
   });
-  if (updated.count !== 1) throw new Response("Task not found", { status: 404 });
+  if (updated.count !== 1)
+    throw new Response("Task not found", { status: 404 });
 }
 
 type DueTask = Pick<

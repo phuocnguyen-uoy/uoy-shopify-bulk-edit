@@ -1,0 +1,228 @@
+.matchMode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.matchMode span {
+  font-size: 13px;
+  font-weight: 550;
+  color: #303030;
+  white-space: nowrap;
+}
+
+.matchMode select {
+  min-height: 32px;
+  border: 1px solid #8a8a8a;
+  border-radius: 8px;
+  background: #fff;
+  color: #303030;
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 28px 5px 10px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 20 20'%3E%3Cpath fill='%23636363' d='M10 13L4 7h12z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.matchMode select:focus {
+  border-color: #005bd3;
+  box-shadow: 0 0 0 2px rgba(0, 91, 211, 0.18);
+  outline: none;
+}
+
+/* ─── Rule row ─── */
+.ruleRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid #e1e3e5;
+  border-radius: 12px;
+  background: #f9fafb;
+}
+
+.ruleLabel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 64px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #eaf2ff;
+  color: #174ea6;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.select,
+.input {
+  box-sizing: border-box;
+  height: 36px;
+  border: 1px solid #8a8a8a;
+  border-radius: 8px;
+  background: #fff;
+  color: #303030;
+  font: inherit;
+  font-size: 13px;
+  padding: 0 10px;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.select {
+  padding-right: 28px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 20 20'%3E%3Cpath fill='%23636363' d='M10 13L4 7h12z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+  background-color: #fff;
+  cursor: pointer;
+  min-width: 140px;
+  flex: 1 1 140px;
+}
+
+.input {
+  min-width: 120px;
+  flex: 2 1 160px;
+}
+
+.select:focus,
+.input:focus {
+  border-color: #005bd3;
+  box-shadow: 0 0 0 2px rgba(0, 91, 211, 0.18);
+  outline: none;
+}
+
+/* ─── Buttons ─── */
+.actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #c9cccf;
+  border-radius: 6px;
+  background: #fff;
+  color: #303030;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+  flex-shrink: 0;
+}
+
+.iconButton:hover:not(:disabled) {
+  background: #f1f2f3;
+  border-color: #8a8a8a;
+}
+
+.iconButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.removeButton {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid #cc0000;
+  border-radius: 6px;
+  background: #fff;
+  color: #cc0000;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms ease;
+  flex-shrink: 0;
+}
+
+.removeButton:hover:not(:disabled) {
+  background: #fff4f4;
+}
+
+.removeButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ─── Add button ─── */
+.addButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  border: 1.5px dashed #005bd3;
+  border-radius: 8px;
+  background: transparent;
+  color: #005bd3;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.addButton:hover {
+  border-color: #0046a3;
+  background: #eaf2ff;
+  color: #0046a3;
+}
+
+/* ─── Hint text ─── */
+.orderHint {
+  margin: 0 0 4px;
+  color: #616161;
+  font-size: 13px;
+}
+
+.ruleList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.collectionPickerWrapper {
+  flex: 2 1 200px;
+  min-width: 200px;
+}
+
+@media (max-width: 720px) {
+  .matchMode {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .matchMode select {
+    width: 100%;
+  }
+
+  .ruleRow {
+    align-items: stretch;
+  }
+
+  .select,
+  .input {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+}

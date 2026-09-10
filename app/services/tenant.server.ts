@@ -40,13 +40,17 @@ export function tenantDb(db: DbClient, rawShopDomain: string) {
         db.task.findFirst({ where: { id, shopDomain } }),
       create: (data: Omit<Prisma.TaskUncheckedCreateInput, "shopDomain">) =>
         db.task.create({ data: { ...data, shopDomain } }),
-      delete: (id: string) =>
-        db.task.deleteMany({ where: { id, shopDomain } }),
+      delete: (id: string) => db.task.deleteMany({ where: { id, shopDomain } }),
       schedule: (
         id: string,
         data: Pick<
           Prisma.TaskUncheckedUpdateInput,
-          "status" | "scheduledAt" | "recurringCron" | "timezone" | "nextRunAt"
+          | "status"
+          | "selectionMode"
+          | "scheduledAt"
+          | "recurringCron"
+          | "timezone"
+          | "nextRunAt"
         >,
       ) =>
         db.task.updateMany({
@@ -62,7 +66,12 @@ export function tenantDb(db: DbClient, rawShopDomain: string) {
           take: 100,
           include: {
             task: {
-              select: { id: true, name: true, resourceType: true, frozenResourceIds: true },
+              select: {
+                id: true,
+                name: true,
+                resourceType: true,
+                frozenResourceIds: true,
+              },
             },
             _count: { select: { changes: true } },
           },
@@ -72,7 +81,12 @@ export function tenantDb(db: DbClient, rawShopDomain: string) {
           where: { id: runId, shopDomain },
           include: {
             task: {
-              select: { id: true, name: true, resourceType: true, frozenResourceIds: true },
+              select: {
+                id: true,
+                name: true,
+                resourceType: true,
+                frozenResourceIds: true,
+              },
             },
             changes: { orderBy: { createdAt: "asc" } },
           },
@@ -107,10 +121,28 @@ export function tenantDb(db: DbClient, rawShopDomain: string) {
             completedAt: new Date(),
           },
         }),
-      attachShopifyOperation: (id: string, shopifyOperationId: string) =>
+      attachShopifyOperation: (
+        id: string,
+        shopifyOperationId: string,
+        totalCount: number,
+      ) =>
         db.taskRun.updateMany({
           where: { id, shopDomain, status: "PREPARING" },
-          data: { shopifyOperationId, status: "RUNNING" },
+          data: {
+            shopifyOperationId,
+            status: "RUNNING",
+            stats: { totalCount, processedCount: 0 },
+          },
+        }),
+      updateRunProgress: (
+        id: string,
+        shopifyOperationId: string,
+        processedCount: number,
+        totalCount: number,
+      ) =>
+        db.taskRun.updateMany({
+          where: { id, shopDomain, shopifyOperationId, status: "RUNNING" },
+          data: { stats: { totalCount, processedCount } },
         }),
       reconcileOperation: (
         id: string,
