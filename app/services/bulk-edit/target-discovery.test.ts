@@ -134,6 +134,127 @@ describe("variantTitle filtering", () => {
   });
 });
 
+describe("matchesVariantTarget — product-level field filtering", () => {
+  const variantWithProduct = {
+    id: "gid://shopify/ProductVariant/10",
+    title: "Blue / Large",
+    sku: "NIKE-BL",
+    price: "99.00",
+    taxable: true,
+    inventoryPolicy: "CONTINUE",
+    inventoryQuantity: 5,
+    product: {
+      id: "gid://shopify/Product/100",
+      title: "Air Max",
+      vendor: "Nike",
+      productType: "Shoes",
+      status: "ACTIVE",
+      tags: ["running", "sale"],
+      handle: "air-max",
+    },
+  };
+
+  it("filters by productTitle", () => {
+    expect(
+      matchesVariantTarget(variantWithProduct, {
+        combinator: "and",
+        conditions: [{ field: "productTitle", operator: "contains", value: "Air" }],
+      }),
+    ).toBe(true);
+    expect(
+      matchesVariantTarget(variantWithProduct, {
+        combinator: "and",
+        conditions: [{ field: "productTitle", operator: "equals", value: "Other" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("filters by productVendor", () => {
+    expect(
+      matchesVariantTarget(variantWithProduct, {
+        combinator: "and",
+        conditions: [{ field: "productVendor", operator: "equals", value: "Nike" }],
+      }),
+    ).toBe(true);
+    expect(
+      matchesVariantTarget(variantWithProduct, {
+        combinator: "and",
+        conditions: [{ field: "productVendor", operator: "equals", value: "Adidas" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("filters by productType", () => {
+    expect(
+      matchesVariantTarget(variantWithProduct, {
+        combinator: "and",
+        conditions: [{ field: "productType", operator: "starts_with", value: "Shoe" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("filters by productStatus", () => {
+    expect(
+      matchesVariantTarget(variantWithProduct, {
+        combinator: "and",
+        conditions: [{ field: "productStatus", operator: "equals", value: "ACTIVE" }],
+      }),
+    ).toBe(true);
+    expect(
+      matchesVariantTarget(variantWithProduct, {
+        combinator: "and",
+        conditions: [{ field: "productStatus", operator: "equals", value: "DRAFT" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("filters by productTags (any match)", () => {
+    expect(
+      matchesVariantTarget(variantWithProduct, {
+        combinator: "and",
+        conditions: [{ field: "productTags", operator: "in_list", values: ["sale"] }],
+      }),
+    ).toBe(true);
+    expect(
+      matchesVariantTarget(variantWithProduct, {
+        combinator: "and",
+        conditions: [{ field: "productTags", operator: "equals", value: "clearance" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("filters by productHandle", () => {
+    expect(
+      matchesVariantTarget(variantWithProduct, {
+        combinator: "and",
+        conditions: [{ field: "productHandle", operator: "starts_with", value: "air" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("combines variant and product-level filters with AND", () => {
+    expect(
+      matchesVariantTarget(variantWithProduct, {
+        combinator: "and",
+        conditions: [
+          { field: "productVendor", operator: "equals", value: "Nike" },
+          { field: "price", operator: "less_than", value: 150 },
+          { field: "inventoryPolicy", operator: "equals", value: "CONTINUE" },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      matchesVariantTarget(variantWithProduct, {
+        combinator: "and",
+        conditions: [
+          { field: "productVendor", operator: "equals", value: "Nike" },
+          { field: "price", operator: "greater_than", value: 150 },
+        ],
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("matchesVariantTarget — direct variant node filtering", () => {
   const redSmall = {
     id: "gid://shopify/ProductVariant/1",
@@ -227,5 +348,103 @@ describe("matchesVariantTarget — direct variant node filtering", () => {
         ],
       }),
     ).toBe(false);
+  });
+});
+
+describe("matchesVariantTarget — extended product-level fields", () => {
+  const variantFull = {
+    id: "gid://shopify/ProductVariant/20",
+    sku: "XT-1",
+    price: "50.00",
+    taxable: false,
+    inventoryPolicy: "DENY",
+    inventoryQuantity: 3,
+    product: {
+      id: "gid://shopify/Product/200",
+      title: "Xtreme Tee",
+      vendor: "Acme",
+      productType: "T-Shirt",
+      status: "ACTIVE",
+      tags: ["summer"],
+      handle: "xtreme-tee",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-06-01T00:00:00Z",
+      publishedAt: "2026-02-01T00:00:00Z",
+      totalInventory: 30,
+      hasOnlyDefaultVariant: false,
+      isGiftCard: false,
+      requiresSellingPlan: false,
+      collections: { nodes: [{ id: "gid://shopify/Collection/42" }] },
+    },
+  };
+
+  it("filters by productCollectionId", () => {
+    expect(
+      matchesVariantTarget(variantFull, {
+        combinator: "and",
+        conditions: [{ field: "productCollectionId", operator: "equals", value: "42" }],
+      }),
+    ).toBe(true);
+    expect(
+      matchesVariantTarget(variantFull, {
+        combinator: "and",
+        conditions: [{ field: "productCollectionId", operator: "equals", value: "99" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("derives productPublishedStatus from publishedAt", () => {
+    expect(
+      matchesVariantTarget(variantFull, {
+        combinator: "and",
+        conditions: [{ field: "productPublishedStatus", operator: "equals", value: "published" }],
+      }),
+    ).toBe(true);
+    const unpublished = { ...variantFull, product: { ...variantFull.product, publishedAt: null } };
+    expect(
+      matchesVariantTarget(unpublished, {
+        combinator: "and",
+        conditions: [{ field: "productPublishedStatus", operator: "equals", value: "unpublished" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("filters by productTotalInventory", () => {
+    expect(
+      matchesVariantTarget(variantFull, {
+        combinator: "and",
+        conditions: [{ field: "productTotalInventory", operator: "greater_than", value: 10 }],
+      }),
+    ).toBe(true);
+    expect(
+      matchesVariantTarget(variantFull, {
+        combinator: "and",
+        conditions: [{ field: "productTotalInventory", operator: "less_than", value: 10 }],
+      }),
+    ).toBe(false);
+  });
+
+  it("filters by productHasOnlyDefaultVariant", () => {
+    expect(
+      matchesVariantTarget(variantFull, {
+        combinator: "and",
+        conditions: [{ field: "productHasOnlyDefaultVariant", operator: "equals", value: "false" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("filters by productCreatedAt and productUpdatedAt", () => {
+    expect(
+      matchesVariantTarget(variantFull, {
+        combinator: "and",
+        conditions: [{ field: "productCreatedAt", operator: "before", value: "2026-06-01" }],
+      }),
+    ).toBe(true);
+    expect(
+      matchesVariantTarget(variantFull, {
+        combinator: "and",
+        conditions: [{ field: "productUpdatedAt", operator: "after", value: "2026-01-01" }],
+      }),
+    ).toBe(true);
   });
 });

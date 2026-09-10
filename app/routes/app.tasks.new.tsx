@@ -208,6 +208,19 @@ function readConfiguration(form: FormData) {
       );
     }
   }
+  if (resourceType === "VARIANT") {
+    const scopes = new Set(
+      actions.actions.map((edit) =>
+        edit.field.startsWith("product") ? "product" : "variant",
+      ),
+    );
+    if (scopes.size > 1) {
+      throw new Response(
+        "A task cannot mix variant and product actions. Create separate tasks so preview, execution, and rollback stay consistent.",
+        { status: 422 },
+      );
+    }
+  }
   return { name, resourceType, filters, actions };
 }
 
@@ -366,29 +379,53 @@ const PRODUCT_ACTION_FIELDS: { value: string; label: string; kind: UiKind }[] =
 
 const VARIANT_FILTER_FIELDS: { value: string; label: string; kind: UiKind }[] =
   [
+    // Variant-level filter fields
     { value: "title", label: "Variant title", kind: "string" },
     { value: "sku", label: "Variant SKU", kind: "string" },
     { value: "barcode", label: "Variant barcode", kind: "string" },
     { value: "price", label: "Variant price", kind: "number" },
+    { value: "compareAtPrice", label: "Variant compare-at price", kind: "number" },
     { value: "taxable", label: "Variant is taxable", kind: "boolean" },
+    { value: "inventoryPolicy", label: "Variant out-of-stock policy", kind: "status" },
+    { value: "inventoryQuantity", label: "Variant inventory quantity", kind: "number" },
+    // Product-level filter fields (filter variants by parent product attributes)
+    { value: "productTitle", label: "Product title", kind: "string" },
+    { value: "productVendor", label: "Product vendor", kind: "string" },
+    { value: "productType", label: "Product type", kind: "string" },
+    { value: "productStatus", label: "Product status", kind: "status" },
+    { value: "productTags", label: "Product tags", kind: "string_list" },
+    { value: "productHandle", label: "Product URL handle", kind: "string" },
+    { value: "productCollectionId", label: "Product collection", kind: "string" },
+    { value: "productTotalInventory", label: "Product total inventory", kind: "number" },
+    { value: "productPublishedAt", label: "Product published at", kind: "date" },
+    { value: "productCreatedAt", label: "Product created at", kind: "date" },
+    { value: "productUpdatedAt", label: "Product updated at", kind: "date" },
+    { value: "productPublishedStatus", label: "Product published status", kind: "status" },
+    { value: "productHasOnlyDefaultVariant", label: "Product has only default variant", kind: "boolean" },
+    { value: "productIsGiftCard", label: "Product is gift card", kind: "boolean" },
+    { value: "productRequiresSellingPlan", label: "Product requires subscription", kind: "boolean" },
   ];
 
 const VARIANT_ACTION_FIELDS: { value: string; label: string; kind: UiKind }[] =
   [
-    { value: "price", label: "Variant price", kind: "number" },
-    {
-      value: "compareAtPrice",
-      label: "Variant compare-at price",
-      kind: "number",
-    },
-    { value: "sku", label: "Variant SKU", kind: "string" },
-    { value: "barcode", label: "Variant barcode", kind: "string" },
-    {
-      value: "inventoryPolicy",
-      label: "Variant out-of-stock policy",
-      kind: "status",
-    },
-    { value: "taxable", label: "Variant is taxable", kind: "boolean" },
+    // Variant-level action fields
+    { value: "price", label: "Variant · Price", kind: "number" },
+    { value: "compareAtPrice", label: "Variant · Compare-at price", kind: "number" },
+    { value: "sku", label: "Variant · SKU", kind: "string" },
+    { value: "barcode", label: "Variant · Barcode", kind: "string" },
+    { value: "taxable", label: "Variant · Is taxable", kind: "boolean" },
+    { value: "inventoryPolicy", label: "Variant · Out-of-stock policy", kind: "status" },
+    // Product-level action fields (updates the parent product of each matched variant)
+    { value: "productTitle", label: "Product · Title", kind: "string" },
+    { value: "productDescriptionHtml", label: "Product · Description (HTML)", kind: "string" },
+    { value: "productVendor", label: "Product · Vendor", kind: "string" },
+    { value: "productType", label: "Product · Type", kind: "string" },
+    { value: "productStatus", label: "Product · Status", kind: "status" },
+    { value: "productTags", label: "Product · Tags", kind: "string_list" },
+    { value: "productHandle", label: "Product · URL handle", kind: "string" },
+    { value: "productSeoTitle", label: "Product · SEO page title", kind: "string" },
+    { value: "productSeoDescription", label: "Product · SEO meta description", kind: "string" },
+    { value: "productTemplateSuffix", label: "Product · Theme template suffix", kind: "string" },
   ];
 
 const COLLECTION_FILTER_FIELDS: {

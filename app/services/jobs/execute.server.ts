@@ -78,6 +78,21 @@ const variantFields = new Map<string, string>([
   ["variantInventoryPolicy", "inventoryPolicy"],
 ]);
 
+// Maps product-scope VARIANT action field names → actual ProductSnapshot field names.
+// When a VARIANT task uses these fields, the executor updates the parent product instead.
+const variantProductFieldMap = new Map<string, string>([
+  ["productTitle", "title"],
+  ["productVendor", "vendor"],
+  ["productType", "productType"],
+  ["productStatus", "status"],
+  ["productTags", "tags"],
+  ["productHandle", "handle"],
+  ["productDescriptionHtml", "descriptionHtml"],
+  ["productSeoTitle", "seoTitle"],
+  ["productSeoDescription", "seoDescription"],
+  ["productTemplateSuffix", "templateSuffix"],
+]);
+
 // Direct variant field names used when resourceType === "VARIANT"
 type DirectVariant = {
   id: string;
@@ -178,6 +193,17 @@ function parseActions(
     );
     if (scopes.size !== 1)
       throw new Error("A task cannot mix product and variant action fields");
+  }
+  if (resourceType === "VARIANT") {
+    const scopes = new Set(
+      actions.map((action) =>
+        variantProductFieldMap.has(action.field) ? "PRODUCT" : "VARIANT",
+      ),
+    );
+    if (scopes.size !== 1)
+      throw new Error(
+        "A VARIANT task cannot mix variant and product action fields. Create separate tasks.",
+      );
   }
   return { actions };
 }
@@ -744,6 +770,58 @@ export async function executeRun(shopDomain: string, runId: string) {
     }
 
     if (run.task.resourceType === "VARIANT") {
+      const isProductScope = actions.actions.every((action) =>
+        variantProductFieldMap.has(action.field),
+      );
+
+      if (isProductScope) {
+        // Product-scope VARIANT task: discover matched variants, collect unique parent
+        // products, apply product-level actions to each parent product, journal as PRODUCT.
+        const rawVariants = await snapshotAll(ids, (chunk) =>
+          snapshotVariantsByIds(admin, chunk),
+        );
+        const productIds = [...new Set(rawVariants.map((v) => v.productId))];
+        const productActionFields = new Set(
+          actions.actions.map((a) => variantProductFieldMap.get(a.field)!),
+        );
+        const normalizedActions = actions.actions.map((a) => ({
+          ...a,
+          field: variantProductFieldMap.get(a.field)!,
+        }));
+        const products = await snapshotAll(productIds, (chunk) =>
+          snapshotBatch(admin, chunk),
+        );
+        const changes = products
+          .map((product) => {
+            const after = applyActions("PRODUCT", product, normalizedActions);
+            return {
+              shopDomain: scoped.shopDomain,
+              runId,
+              resourceGid: product.id,
+              resourceType: "PRODUCT" as const,
+              before: pick(product, productActionFields),
+              after: pick(after, productActionFields),
+              input: productInput(product.id, pick(after, productActionFields)),
+            };
+          })
+          .filter(
+            (change) =>
+              canonicalJson(change.before) !== canonicalJson(change.after),
+          );
+        if (changes.length === 0) {
+          await scoped.taskRun.completeWithoutOperation(runId);
+          return null;
+        }
+        await scoped.taskChange.createMany(changes.map(journalChange));
+        return stageAndRunForTask(
+          admin,
+          scoped.shopDomain,
+          runId,
+          PRODUCT_UPDATE_MUTATION,
+          changes.map((change) => ({ input: change.input })),
+        );
+      }
+
       const rawVariants = await snapshotAll(ids, (chunk) =>
         snapshotVariantsByIds(admin, chunk),
       );

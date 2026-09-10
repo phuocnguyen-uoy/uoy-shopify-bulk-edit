@@ -7,20 +7,20 @@ import {
   Form,
   redirect,
   useActionData,
+  useFetcher,
   useLoaderData,
   useNavigation,
   useRevalidator,
   useRouteError,
   useSubmit,
 } from "react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import { DatePicker } from "../components/DatePicker";
 
 import db from "../db.server";
 import { executeRun } from "../services/jobs/execute.server";
-import { reconcileRun } from "../services/jobs/reconcile.server";
 import { authenticate } from "../shopify.server";
 import { tenantDb } from "../services/tenant.server";
 import {
@@ -41,19 +41,18 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw new Response("Task id is required", { status: 400 });
   const task = await tenantDb(db, session.shop).task.findDetail(params.taskId);
   if (!task) throw new Response("Task not found", { status: 404 });
-  const runningRuns = task.runs.filter((run) => run.status === "RUNNING");
-  if (runningRuns.length > 0) {
-    await Promise.allSettled(
-      runningRuns.map((run) => reconcileRun(session.shop, run.id)),
-    );
-  }
-  const refreshedTask =
-    runningRuns.length > 0
-      ? await tenantDb(db, session.shop).task.findDetail(params.taskId)
-      : task;
-  if (!refreshedTask)
-    throw new Response("Task not found", { status: 404 });
-  const latestRun = refreshedTask.runs.find((run) => run._count.changes > 0);
+
+  // Reconciliation runs inside /app/api/task-status/:id (the polling endpoint),
+  // not here — so navigation is never blocked by a Shopify API call.
+  const hasActiveRun = task.runs.some((run) =>
+    ["QUEUED", "PREPARING", "RUNNING"].includes(run.status),
+  );
+
+  // Skip label fetch while a run is active: polling will trigger a full
+  // revalidation once the run reaches a terminal state.
+  const latestRun = !hasActiveRun
+    ? task.runs.find((run) => run._count.changes > 0)
+    : null;
   const runDetail = latestRun
     ? await tenantDb(db, session.shop).taskRun.findRunDetail(latestRun.id)
     : null;
@@ -111,15 +110,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }
   return {
     task: {
-      id: refreshedTask.id,
-      name: refreshedTask.name,
-      resourceType: refreshedTask.resourceType,
-      status: refreshedTask.status,
-      filterDefinition: refreshedTask.filterDefinition as FilterDefinition,
-      actionDefinition: refreshedTask.actionDefinition as ActionDefinition,
-      scheduledAt: refreshedTask.scheduledAt?.toISOString() ?? null,
-      recurringCron: refreshedTask.recurringCron,
-      runs: refreshedTask.runs.map((run) => ({
+      id: task.id,
+      name: task.name,
+      resourceType: task.resourceType,
+      status: task.status,
+      filterDefinition: task.filterDefinition as FilterDefinition,
+      actionDefinition: task.actionDefinition as ActionDefinition,
+      scheduledAt: task.scheduledAt?.toISOString() ?? null,
+      recurringCron: task.recurringCron,
+      runs: task.runs.map((run) => ({
         id: run.id,
         kind: run.kind,
         status: run.status,
@@ -314,26 +313,77 @@ function displayValue(value: unknown) {
   return String(value);
 }
 
+type PolledRun = {
+  id: string;
+  kind: string;
+  status: string;
+  scheduledFor: string;
+  completedAt: string | null;
+  changeCount: number;
+  stats: { totalCount?: number; processedCount?: number } | null;
+};
+
+const ACTIVE_STATUSES = new Set(["QUEUED", "PREPARING", "RUNNING"]);
+
 export default function TaskDetail() {
   const { task } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const revalidator = useRevalidator();
   const submit = useSubmit();
+  const statusFetcher = useFetcher<{ runs: PolledRun[] }>();
   const [pendingIntent, setPendingIntent] = useState<string | null>(null);
   const busy = navigation.state !== "idle";
 
   const revertError = actionData && "revertError" in actionData ? actionData.revertError : null;
 
-  const hasActiveRun = task.runs.some((r) =>
-    ["QUEUED", "PREPARING", "RUNNING"].includes(r.status),
-  );
+  // Merge loader runs with the most recent polled statuses so progress updates
+  // without a full page reload. Re-derive canRollback from polled status.
+  const mergedRuns = useMemo(() => {
+    if (!statusFetcher.data) return task.runs;
+    const polledMap = new Map(statusFetcher.data.runs.map((r) => [r.id, r]));
+    return task.runs.map((r) => {
+      const p = polledMap.get(r.id);
+      if (!p) return r;
+      return {
+        ...r,
+        status: p.status,
+        stats: p.stats,
+        changeCount: p.changeCount,
+        completedAt: p.completedAt,
+        canRollback: r.kind === "APPLY" && p.status === "COMPLETED",
+      };
+    });
+  }, [task.runs, statusFetcher.data]);
 
+  const hasActiveRun = mergedRuns.some((r) => ACTIVE_STATUSES.has(r.status));
+
+  // Detect active→terminal transition and trigger one full revalidation so the
+  // changes section and labels load. A ref avoids the double-fire problem.
+  const hasRevalidatedRef = useRef(false);
+  const prevHasActiveRef = useRef(hasActiveRun);
+  useEffect(() => {
+    const wasActive = prevHasActiveRef.current;
+    prevHasActiveRef.current = hasActiveRun;
+    if (hasActiveRun) {
+      hasRevalidatedRef.current = false;
+    } else if (wasActive && !hasRevalidatedRef.current) {
+      hasRevalidatedRef.current = true;
+      revalidator.revalidate();
+    }
+  }, [hasActiveRun, revalidator]);
+
+  // Poll the lightweight status endpoint every 2 s while a run is active.
+  // Only schedule the next poll after the current fetch is idle to avoid stacking.
   useEffect(() => {
     if (!hasActiveRun) return;
-    const id = setInterval(() => revalidator.revalidate(), 4000);
-    return () => clearInterval(id);
-  }, [hasActiveRun, revalidator]);
+    if (statusFetcher.state !== "idle") return;
+    const id = setTimeout(() => {
+      statusFetcher.load(`/app/api/task-status/${task.id}`);
+    }, 2000);
+    return () => clearTimeout(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasActiveRun, statusFetcher.state, statusFetcher.data, task.id]);
 
   const act = (intent: string, extraData?: Record<string, string>) => {
     setPendingIntent(intent);
@@ -393,8 +443,8 @@ export default function TaskDetail() {
       )}
 
       {hasActiveRun && (() => {
-        const activeRun = task.runs.find((r) =>
-          ["QUEUED", "PREPARING", "RUNNING"].includes(r.status),
+        const activeRun = mergedRuns.find((r) =>
+          ACTIVE_STATUSES.has(r.status),
         );
         const progress = activeRun?.stats?.totalCount
           ? `${activeRun.stats.processedCount ?? 0} / ${activeRun.stats.totalCount} items processed.`
@@ -548,11 +598,11 @@ export default function TaskDetail() {
         </s-section>
 
         <s-section heading="Run history">
-          {task.runs.length === 0 ? (
+          {mergedRuns.length === 0 ? (
             <s-paragraph>This task has not run yet.</s-paragraph>
           ) : (
             <s-stack direction="block" gap="base">
-              {task.runs.map((run) => (
+              {mergedRuns.map((run) => (
                 <s-box
                   key={run.id}
                   padding="base"

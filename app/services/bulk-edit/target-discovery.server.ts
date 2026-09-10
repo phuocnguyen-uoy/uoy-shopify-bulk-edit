@@ -47,6 +47,23 @@ export type VariantCandidate = {
   taxable?: boolean;
   inventoryPolicy?: string;
   inventoryQuantity?: number;
+  product?: {
+    id: string;
+    title?: string;
+    vendor?: string;
+    productType?: string;
+    status?: string;
+    tags?: string[];
+    handle?: string;
+    createdAt?: string;
+    updatedAt?: string;
+    publishedAt?: string | null;
+    totalInventory?: number;
+    hasOnlyDefaultVariant?: boolean;
+    isGiftCard?: boolean;
+    requiresSellingPlan?: boolean;
+    collections?: { nodes: Array<{ id: string }> };
+  };
 };
 
 function valuesFor(node: TargetCandidate, field: string): unknown[] {
@@ -140,6 +157,25 @@ function compare(value: unknown, condition: FilterCondition) {
 }
 
 function valuesForVariant(node: VariantCandidate, field: string): unknown[] {
+  const product = node.product;
+  switch (field) {
+    case "productTitle": return [product?.title];
+    case "productVendor": return [product?.vendor];
+    case "productType": return [product?.productType];
+    case "productStatus": return [product?.status];
+    case "productHandle": return [product?.handle];
+    case "productTags": return product?.tags?.length ? product.tags : [undefined];
+    case "productCreatedAt": return [product?.createdAt];
+    case "productUpdatedAt": return [product?.updatedAt];
+    case "productPublishedAt": return [product?.publishedAt];
+    case "productPublishedStatus": return [product?.publishedAt ? "published" : "unpublished"];
+    case "productTotalInventory": return [product?.totalInventory];
+    case "productHasOnlyDefaultVariant": return [product?.hasOnlyDefaultVariant];
+    case "productIsGiftCard": return [product?.isGiftCard];
+    case "productRequiresSellingPlan": return [product?.requiresSellingPlan];
+    case "productCollectionId":
+      return product?.collections?.nodes.map((c) => c.id) ?? [undefined];
+  }
   if (field in node) return [node[field as keyof VariantCandidate]];
   throw new Error(`Target discovery cannot evaluate variant field: ${field}`);
 }
@@ -231,6 +267,12 @@ async function pageVariants(
         nodes {
           id title sku barcode price compareAtPrice taxable
           inventoryPolicy inventoryQuantity
+          product {
+            id title vendor productType status tags handle
+            createdAt updatedAt publishedAt totalInventory
+            hasOnlyDefaultVariant isGiftCard requiresSellingPlan
+            collections(first: 250) { nodes { id } }
+          }
         }
         pageInfo { hasNextPage endCursor }
       }

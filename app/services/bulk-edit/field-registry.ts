@@ -248,6 +248,7 @@ export const fieldRegistry: Record<
     },
   },
   VARIANT: {
+    // Variant-level fields
     title: {
       kind: "string",
       searchKey: "title",
@@ -274,6 +275,7 @@ export const fieldRegistry: Record<
     },
     compareAtPrice: {
       kind: "number",
+      searchKey: "compare_at_price",
       filterOperators: numberOperators,
       editable: true,
     },
@@ -282,6 +284,18 @@ export const fieldRegistry: Record<
       searchKey: "taxable",
       filterOperators: ["equals", "not_equals"],
       editable: true,
+    },
+    inventoryPolicy: {
+      kind: "string",
+      searchKey: "inventory_policy",
+      filterOperators: ["equals", "not_equals"],
+      editable: true,
+    },
+    inventoryQuantity: {
+      kind: "number",
+      searchKey: "inventory_quantity",
+      filterOperators: numberOperators,
+      editable: false,
     },
     weight: {
       kind: "number",
@@ -293,24 +307,111 @@ export const fieldRegistry: Record<
       filterOperators: ["equals", "not_equals"],
       editable: false,
     },
-    inventoryPolicy: {
-      kind: "string",
-      filterOperators: ["equals", "not_equals"],
-      editable: true,
-    },
     requiresShipping: {
       kind: "boolean",
       filterOperators: ["equals", "not_equals"],
       editable: false,
     },
-    inventoryQuantity: {
+    costPerItem: {
       kind: "number",
       filterOperators: numberOperators,
       editable: false,
     },
-    costPerItem: {
+    // Product-level fields — filter traverses parent product; actions update the parent product
+    productTitle: {
+      kind: "string",
+      searchKey: "product_title",
+      filterOperators: textOperators,
+      editable: true,
+    },
+    productVendor: {
+      kind: "string",
+      searchKey: "vendor",
+      filterOperators: textOperators,
+      editable: true,
+    },
+    productType: {
+      kind: "string",
+      searchKey: "product_type",
+      filterOperators: textOperators,
+      editable: true,
+    },
+    productStatus: {
+      kind: "string",
+      searchKey: "status",
+      filterOperators: ["equals", "not_equals"],
+      editable: true,
+    },
+    productTags: {
+      kind: "string_list",
+      searchKey: "tag",
+      filterOperators: textOperators,
+      editable: true,
+    },
+    productHandle: {
+      kind: "string",
+      searchKey: "handle",
+      filterOperators: textOperators,
+      editable: true,
+    },
+    // Product action-only fields (no searchKey — use action scope only)
+    productDescriptionHtml: { kind: "string", filterOperators: [], editable: true },
+    productSeoTitle: { kind: "string", filterOperators: [], editable: true },
+    productSeoDescription: { kind: "string", filterOperators: [], editable: true },
+    productTemplateSuffix: { kind: "string", filterOperators: [], editable: true },
+    // Product filter-only fields (read-only — for filtering variants by parent product attributes)
+    productCollectionId: {
+      kind: "string",
+      searchKey: "collection_id",
+      filterOperators: ["equals", "not_equals"],
+      editable: false,
+    },
+    productPublishedStatus: {
+      kind: "string",
+      searchKey: "published_status",
+      filterOperators: ["equals", "not_equals"],
+      editable: false,
+    },
+    productPublishedAt: {
+      kind: "string",
+      searchKey: "published_at",
+      filterOperators: ["greater_than", "less_than", "before", "after", "between"],
+      editable: false,
+    },
+    productCreatedAt: {
+      kind: "string",
+      searchKey: "created_at",
+      filterOperators: ["greater_than", "less_than", "before", "after", "between"],
+      editable: false,
+    },
+    productUpdatedAt: {
+      kind: "string",
+      searchKey: "updated_at",
+      filterOperators: ["greater_than", "less_than", "before", "after", "between"],
+      editable: false,
+    },
+    productTotalInventory: {
       kind: "number",
+      searchKey: "inventory_total",
       filterOperators: numberOperators,
+      editable: false,
+    },
+    productHasOnlyDefaultVariant: {
+      kind: "boolean",
+      searchKey: "has_only_default_variant",
+      filterOperators: ["equals"],
+      editable: false,
+    },
+    productIsGiftCard: {
+      kind: "boolean",
+      searchKey: "gift_card",
+      filterOperators: ["equals"],
+      editable: false,
+    },
+    productRequiresSellingPlan: {
+      kind: "boolean",
+      searchKey: "requires_selling_plan",
+      filterOperators: ["equals"],
       editable: false,
     },
   },

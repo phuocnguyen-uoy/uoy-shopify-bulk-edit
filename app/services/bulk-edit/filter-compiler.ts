@@ -61,7 +61,10 @@ function compileCondition(resource: ResourceType, condition: FilterCondition) {
   if (condition.value === undefined)
     throw new Error(`Filter value is required for ${condition.field}`);
 
-  if (resource === "PRODUCT" && condition.field === "collectionId") {
+  if (
+    (resource === "PRODUCT" && condition.field === "collectionId") ||
+    (resource === "VARIANT" && condition.field === "productCollectionId")
+  ) {
     const ids = String(condition.value)
       .split(",")
       .map((id) => id.trim())
