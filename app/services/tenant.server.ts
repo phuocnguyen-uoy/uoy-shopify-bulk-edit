@@ -112,12 +112,24 @@ export function tenantDb(db: DbClient, rawShopDomain: string) {
           where: { id, shopDomain, status: "PREPARING" },
           data: { status: "FAILED", error, completedAt: new Date() },
         }),
-      completeWithoutOperation: (id: string) =>
+      recordRollbackConflicts: (id: string, resourceGids: string[]) =>
+        db.taskRun.updateMany({
+          where: { id, shopDomain, kind: "REVERT", status: "PREPARING" },
+          data: {
+            error: {
+              code: "ROLLBACK_CONFLICTS",
+              skipped: resourceGids.length,
+              resourceGids,
+              message: `Skipped ${resourceGids.length} resource(s) because their current values differ from the bulk edit. These resources were not reverted.`,
+            },
+          },
+        }),
+      completeWithoutOperation: (id: string, skipped = 0) =>
         db.taskRun.updateMany({
           where: { id, shopDomain, status: "PREPARING" },
           data: {
-            status: "COMPLETED",
-            stats: { rows: 0, succeeded: 0, failed: 0, errors: [] },
+            status: skipped > 0 ? "PARTIALLY_FAILED" : "COMPLETED",
+            stats: { rows: 0, succeeded: 0, failed: 0, skipped, errors: [] },
             completedAt: new Date(),
           },
         }),

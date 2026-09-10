@@ -3,6 +3,7 @@ import db from "../../db.server";
 import { unauthenticated } from "../../shopify.server";
 import { tenantDb } from "../tenant.server";
 import { summarizeJsonl } from "./result-stream";
+import { rollbackSkippedCount } from "./rollback-conflict";
 
 type GraphqlClient = {
   graphql: (query: string, options?: { variables?: Record<string, unknown> }) => Promise<Response>;
@@ -79,8 +80,9 @@ export async function reconcileRun(shopDomain: string, runId: string) {
     return { status: operation.status, changed: false };
   }
 
-  const summary = await resultSummary(operation);
-  const finalStatus = mapped === "COMPLETED" && summary.failed > 0
+  const skipped = run.kind === "REVERT" ? rollbackSkippedCount(run.error) : 0;
+  const summary = { ...(await resultSummary(operation)), skipped };
+  const finalStatus = mapped === "COMPLETED" && (summary.failed > 0 || skipped > 0)
     ? "PARTIALLY_FAILED"
     : mapped;
   const updated = await scoped.taskRun.reconcileOperation(
@@ -89,7 +91,9 @@ export async function reconcileRun(shopDomain: string, runId: string) {
     {
       status: finalStatus,
       stats: summary,
-      error: operation.errorCode ? { code: operation.errorCode } : undefined,
+      error: operation.errorCode
+        ? { code: operation.errorCode, ...(skipped > 0 ? { rollbackConflicts: run.error } : {}) }
+        : undefined,
       completedAt: new Date(),
     },
   );

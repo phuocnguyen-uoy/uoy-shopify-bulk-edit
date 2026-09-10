@@ -17,6 +17,7 @@ import type {
   FilterDefinition,
 } from "../tasks/types";
 import { tenantDb } from "../tenant.server";
+import { rollbackValuesMatch } from "./rollback-conflict";
 
 type ProductSnapshot = {
   id: string;
@@ -524,23 +525,6 @@ function parseSnapshot(
   return value as Prisma.InputJsonObject;
 }
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value))
-    return "[" + value.map(canonicalJson).sort().join(",") + "]";
-  if (value && typeof value === "object") {
-    const object = value as Record<string, unknown>;
-    return (
-      "{" +
-      Object.keys(object)
-        .sort()
-        .map((key) => JSON.stringify(key) + ":" + canonicalJson(object[key]))
-        .join(",") +
-      "}"
-    );
-  }
-  return JSON.stringify(value);
-}
-
 async function executeRollback(
   admin: GraphqlClient,
   shopDomain: string,
@@ -578,7 +562,8 @@ async function executeRollback(
       : new Map(
           variants.map((v) => [v.id, v as Record<string, unknown>]),
         );
-    const reverseChanges = sourceChanges.map((change) => {
+    const conflictIds: string[] = [];
+    const reverseChanges = sourceChanges.flatMap((change) => {
       const before = parseSnapshot(change.before, "before");
       const expected = parseSnapshot(change.after, "after");
       const current = normalizedById.get(change.resourceGid);
@@ -589,9 +574,11 @@ async function executeRollback(
         );
       const fields = new Set(Object.keys(expected));
       const actual = pick(current, fields);
-      if (canonicalJson(actual) !== canonicalJson(expected))
-        throw new Error("Rollback conflict detected for " + change.resourceGid);
-      return {
+      if (!rollbackValuesMatch(actual, expected)) {
+        conflictIds.push(change.resourceGid);
+        return [];
+      }
+      return [{
         runId,
         resourceGid: change.resourceGid,
         resourceType: "VARIANT" as const,
@@ -601,8 +588,14 @@ async function executeRollback(
         input: isDirectVariantTask
           ? directVariantInput(change.resourceGid, before)
           : variantInput(change.resourceGid, before),
-      };
+      }];
     });
+    if (conflictIds.length > 0)
+      await scoped.taskRun.recordRollbackConflicts(runId, conflictIds);
+    if (reverseChanges.length === 0) {
+      await scoped.taskRun.completeWithoutOperation(runId, conflictIds.length);
+      return null;
+    }
     await scoped.taskChange.createMany(reverseChanges.map(journalChange));
     return stageAndRunForTask(
       admin,
@@ -626,7 +619,8 @@ async function executeRollback(
     const byId = new Map(
       collections.map((collection) => [collection.id, collection]),
     );
-    const reverseChanges = sourceChanges.map((change) => {
+    const conflictIds: string[] = [];
+    const reverseChanges = sourceChanges.flatMap((change) => {
       const before = parseSnapshot(change.before, "before");
       const expected = parseSnapshot(change.after, "after");
       const current = byId.get(change.resourceGid);
@@ -636,17 +630,25 @@ async function executeRollback(
         );
       const fields = new Set(Object.keys(expected));
       const actual = pick(current, fields);
-      if (canonicalJson(actual) !== canonicalJson(expected))
-        throw new Error("Rollback conflict detected for " + change.resourceGid);
-      return {
+      if (!rollbackValuesMatch(actual, expected)) {
+        conflictIds.push(change.resourceGid);
+        return [];
+      }
+      return [{
         runId,
         resourceGid: change.resourceGid,
         resourceType: "COLLECTION" as const,
         before: actual,
         after: before,
         input: collectionInput(change.resourceGid, before),
-      };
+      }];
     });
+    if (conflictIds.length > 0)
+      await scoped.taskRun.recordRollbackConflicts(runId, conflictIds);
+    if (reverseChanges.length === 0) {
+      await scoped.taskRun.completeWithoutOperation(runId, conflictIds.length);
+      return null;
+    }
     await scoped.taskChange.createMany(reverseChanges.map(journalChange));
     return stageAndRunForTask(
       admin,
@@ -663,7 +665,8 @@ async function executeRollback(
   );
   const byId = new Map(products.map((product) => [product.id, product]));
   const rows: Record<string, unknown>[] = [];
-  const reverseChanges = sourceChanges.map((change) => {
+  const conflictIds: string[] = [];
+  const reverseChanges = sourceChanges.flatMap((change) => {
     const before = parseSnapshot(change.before, "before");
     const expected = parseSnapshot(change.after, "after");
     const current = byId.get(change.resourceGid);
@@ -673,17 +676,25 @@ async function executeRollback(
       );
     const fields = new Set(Object.keys(expected));
     const actual = pick(current, fields);
-    if (canonicalJson(actual) !== canonicalJson(expected))
-      throw new Error("Rollback conflict detected for " + change.resourceGid);
+    if (!rollbackValuesMatch(actual, expected)) {
+      conflictIds.push(change.resourceGid);
+      return [];
+    }
     rows.push({ input: productInput(change.resourceGid, before) });
-    return {
+    return [{
       runId,
       resourceGid: change.resourceGid,
       resourceType: "PRODUCT" as const,
       before: actual,
       after: before,
-    };
+    }];
   });
+  if (conflictIds.length > 0)
+    await scoped.taskRun.recordRollbackConflicts(runId, conflictIds);
+  if (reverseChanges.length === 0) {
+    await scoped.taskRun.completeWithoutOperation(runId, conflictIds.length);
+    return null;
+  }
   await scoped.taskChange.createMany(reverseChanges);
   return stageAndRunForTask(
     admin,
@@ -706,7 +717,7 @@ export async function executeRun(shopDomain: string, runId: string) {
     if (run.kind === "REVERT") {
       if (!run.sourceRunId)
         throw new Error("Rollback run is missing sourceRunId");
-      return executeRollback(admin, scoped.shopDomain, run.id, run.sourceRunId);
+      return await executeRollback(admin, scoped.shopDomain, run.id, run.sourceRunId);
     }
     const actions = parseActions(
       run.task.resourceType,
@@ -753,14 +764,14 @@ export async function executeRun(shopDomain: string, runId: string) {
         })
         .filter(
           (change) =>
-            canonicalJson(change.before) !== canonicalJson(change.after),
+            !rollbackValuesMatch(change.before, change.after),
         );
       if (changes.length === 0) {
         await scoped.taskRun.completeWithoutOperation(runId);
         return null;
       }
       await scoped.taskChange.createMany(changes.map(journalChange));
-      return stageAndRunForTask(
+      return await stageAndRunForTask(
         admin,
         scoped.shopDomain,
         runId,
@@ -806,14 +817,14 @@ export async function executeRun(shopDomain: string, runId: string) {
           })
           .filter(
             (change) =>
-              canonicalJson(change.before) !== canonicalJson(change.after),
+              !rollbackValuesMatch(change.before, change.after),
           );
         if (changes.length === 0) {
           await scoped.taskRun.completeWithoutOperation(runId);
           return null;
         }
         await scoped.taskChange.createMany(changes.map(journalChange));
-        return stageAndRunForTask(
+        return await stageAndRunForTask(
           admin,
           scoped.shopDomain,
           runId,
@@ -848,14 +859,14 @@ export async function executeRun(shopDomain: string, runId: string) {
         })
         .filter(
           (change) =>
-            canonicalJson(change.before) !== canonicalJson(change.after),
+            !rollbackValuesMatch(change.before, change.after),
         );
       if (changes.length === 0) {
         await scoped.taskRun.completeWithoutOperation(runId);
         return null;
       }
       await scoped.taskChange.createMany(changes.map(journalChange));
-      return stageAndRunForTask(
+      return await stageAndRunForTask(
         admin,
         scoped.shopDomain,
         runId,
@@ -893,14 +904,14 @@ export async function executeRun(shopDomain: string, runId: string) {
         })
         .filter(
           (change) =>
-            canonicalJson(change.before) !== canonicalJson(change.after),
+            !rollbackValuesMatch(change.before, change.after),
         );
       if (changes.length === 0) {
         await scoped.taskRun.completeWithoutOperation(runId);
         return null;
       }
       await scoped.taskChange.createMany(changes.map(journalChange));
-      return stageAndRunForTask(
+      return await stageAndRunForTask(
         admin,
         scoped.shopDomain,
         runId,
@@ -932,14 +943,14 @@ export async function executeRun(shopDomain: string, runId: string) {
       })
       .filter(
         (change) =>
-          canonicalJson(change.before) !== canonicalJson(change.after),
+          !rollbackValuesMatch(change.before, change.after),
       );
     if (changes.length === 0) {
       await scoped.taskRun.completeWithoutOperation(runId);
       return null;
     }
     await scoped.taskChange.createMany(changes.map(journalChange));
-    return stageAndRunForTask(
+    return await stageAndRunForTask(
       admin,
       scoped.shopDomain,
       runId,

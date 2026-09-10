@@ -14,6 +14,7 @@ import {
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 import db from "../db.server";
+import { rollbackSkippedCount } from "../services/jobs/rollback-conflict";
 import { executeRun } from "../services/jobs/execute.server";
 import { reconcileRun } from "../services/jobs/reconcile.server";
 import { enqueueRollback } from "../services/tasks/task-service.server";
@@ -43,6 +44,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       createdAt: run.createdAt.toISOString(),
       completedAt: run.completedAt?.toISOString() ?? null,
       changeCount: run._count.changes,
+      skippedCount: rollbackSkippedCount(run.error, run.stats),
       canRevert: run.kind === "APPLY" && run.status === "COMPLETED",
     })),
   };
@@ -159,9 +161,14 @@ export default function TaskHistory() {
                   <s-text>
                     {run.kind === "REVERT" ? "Revert" : "Bulk edit"}
                   </s-text>
-                  <s-badge tone={STATUS_TONE[run.status] ?? "neutral"}>
-                    {run.status.toLowerCase().replace(/_/g, " ")}
-                  </s-badge>
+                  <s-stack direction="block" gap="small">
+                    <s-badge tone={STATUS_TONE[run.status] ?? "neutral"}>
+                      {run.status.toLowerCase().replace(/_/g, " ")}
+                    </s-badge>
+                    {run.skippedCount > 0 && (
+                      <s-text>{run.skippedCount} skipped: current values changed; not reverted.</s-text>
+                    )}
+                  </s-stack>
                   <s-text>{run.changeCount > 0 ? run.changeCount : "—"}</s-text>
                   <s-text>{fmtDate(run.createdAt)}</s-text>
                   <s-text>
@@ -175,7 +182,7 @@ export default function TaskHistory() {
                       disabled={busy}
                       loading={revertingRunId === run.id}
                       onClick={() => {
-                        if (!window.confirm(`Revert this run? All ${run.resourceType === "COLLECTION" ? "collection" : "product"} changes from this run will be undone.`)) return;
+                        if (!window.confirm(`Revert this run? All ${run.resourceType === "COLLECTION" ? "collection" : "product"} changes that still match this run will be undone. Conflicting resources will be skipped.`)) return;
                         const data = new FormData();
                         data.set("taskId", run.taskId);
                         data.set("sourceRunId", run.id);

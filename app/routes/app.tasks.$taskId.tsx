@@ -20,6 +20,7 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { DatePicker } from "../components/DatePicker";
 
 import db from "../db.server";
+import { rollbackSkippedCount } from "../services/jobs/rollback-conflict";
 import { executeRun } from "../services/jobs/execute.server";
 import { authenticate } from "../shopify.server";
 import { tenantDb } from "../services/tenant.server";
@@ -125,6 +126,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         scheduledFor: run.scheduledFor.toISOString(),
         completedAt: run.completedAt?.toISOString() ?? null,
         changeCount: run._count.changes,
+        skippedCount: rollbackSkippedCount(run.error, run.stats),
         canRollback: run.kind === "APPLY" && run.status === "COMPLETED",
         stats: run.stats as { totalCount?: number; processedCount?: number } | null,
       })),
@@ -629,6 +631,9 @@ export default function TaskDetail() {
                       )}
                     </s-stack>
                     <s-stack direction="block" gap="small">
+                      {run.skippedCount > 0 && (
+                        <s-text>{run.skippedCount} skipped: current values changed; not reverted.</s-text>
+                      )}
                       <s-text>Scheduled: {fmtDate(run.scheduledFor)}</s-text>
                       {run.completedAt && (
                         <s-text>Completed: {fmtDate(run.completedAt)}</s-text>
@@ -644,7 +649,7 @@ export default function TaskDetail() {
                           onClick={() => {
                             if (
                               !window.confirm(
-                                `Revert this run? All ${task.resourceType === "COLLECTION" ? "collection" : "product"} changes from this run will be undone.`,
+                                `Revert this run? All ${task.resourceType === "COLLECTION" ? "collection" : "product"} changes that still match this run will be undone. Conflicting resources will be skipped.`,
                               )
                             )
                               return;
