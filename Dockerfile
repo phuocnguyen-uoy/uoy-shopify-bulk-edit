@@ -17,7 +17,8 @@ RUN pnpm config set network-concurrency 1 \
     && pnpm config set child-concurrency 1 \
     && pnpm install --frozen-lockfile
 COPY . .
-RUN pnpm run build
+ARG SHOPIFY_APP_URL
+RUN NODE_ENV=production pnpm run build
 RUN pnpm prune --prod
 
 FROM base AS runtime

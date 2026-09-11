@@ -1,11 +1,15 @@
 import type { Config } from "@react-router/dev/config";
 
-const productionHost = "uoy-bulk-product-editor.onrender.com";
+const appUrl = new URL(
+  process.env.SHOPIFY_APP_URL || "https://uoy-bulk-product-editor.onrender.com",
+);
+if (!["http:", "https:"].includes(appUrl.protocol) || appUrl.hostname.includes("*")) {
+  throw new Error("SHOPIFY_APP_URL must be an HTTP(S) URL with an exact hostname");
+}
+const productionHost = appUrl.host;
 
 export default {
-  // Shopify dev actions originate from the public tunnel while React Router
-  // receives the request through the local proxy. Allow only our production
-  // host and the dynamic Cloudflare development host pattern.
+  // Each deployment accepts actions from its own public Shopify app URL.
   allowedActionOrigins:
     process.env.NODE_ENV === "production"
       ? [productionHost]

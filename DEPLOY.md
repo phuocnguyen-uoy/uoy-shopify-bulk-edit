@@ -1,5 +1,30 @@
 # Deploy và cài app lên dev store
 
+## Deploy hai app GingerGlow và Flagwix
+
+Hai app dùng chung source code nhưng có cấu hình Shopify và Render độc lập:
+
+- GingerGlow: `shopify.app.ginger.toml` → `https://uoy-ginger-bulk-edit.onrender.com`
+- Flagwix: `shopify.app.flagwix.toml` → `https://uoy-flagwix-bulk-edit.onrender.com`
+
+Validate và phát hành cấu hình Shopify cho từng app:
+
+```bash
+shopify app config validate --config ginger --json
+shopify app deploy --config ginger
+
+shopify app config validate --config flagwix --json
+shopify app deploy --config flagwix
+```
+
+`shopify app deploy` chỉ cập nhật configuration/extensions trên Shopify; web app
+vẫn phải deploy riêng trên hai Render services.
+
+Không dùng chung một `.env` cho hai service. Mỗi Render service cần bộ biến riêng:
+`SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`, `SHOPIFY_APP_URL`, `DATABASE_URL`,
+`SCOPES`, và `CRON_SECRET`. Render tự chuyển `SHOPIFY_APP_URL` thành Docker build
+argument; URL này không phải secret và được dùng để build `allowedActionOrigins`.
+
 ## shopify.web.toml — đọc phần này trước
 
 Repo được tạo bằng `git clone` template chứ không phải `shopify app init`, nên
