@@ -1,7 +1,7 @@
 # Config for GingerGlow store — uoy-ginger-bulk-edit app
 
 client_id = "06ae4fbc51de489636b12ce22f5d9cd2"
-name = "uoy-ginger-bulk-edit"
+name = "UOY Bulk Edit For Ginger"
 application_url = "https://uoy-ginger-bulk-edit.onrender.com"
 embedded = true
 

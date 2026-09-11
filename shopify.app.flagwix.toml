@@ -1,7 +1,7 @@
 # Config for Flagwix store — uoy-flagwix-bulk-edit app
 
 client_id = "c4840c69f4aa4490612f79d4a6494c0e"
-name = "uoy-flagwix-bulk-edit"
+name = "UOY Bulk Edit For Flagwix"
 application_url = "https://uoy-flagwix-bulk-edit.onrender.com"
 embedded = true
 
