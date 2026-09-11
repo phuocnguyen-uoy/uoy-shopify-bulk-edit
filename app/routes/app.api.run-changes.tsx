@@ -32,21 +32,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   >();
 
   if (run.changes.length > 0) {
-    const response = await admin.graphql(
-      `#graphql
-      query RunChangedProducts($ids: [ID!]!) {
-        nodes(ids: $ids) {
-          ... on Product { id title featuredImage { url } }
-          ... on Collection { id title image { url } }
-          ... on ProductVariant {
-            id title image { url }
-            product { id title featuredImage { url } }
-          }
-        }
-      }`,
-      { variables: { ids: run.changes.map((c) => c.resourceGid) } },
+    const allIds = run.changes.map((c) => c.resourceGid);
+    const chunks: string[][] = [];
+    for (let i = 0; i < allIds.length; i += 250) chunks.push(allIds.slice(i, i + 250));
+    const responses = await Promise.all(
+      chunks.map((chunk) =>
+        admin.graphql(
+          `#graphql
+          query RunChangedProducts($ids: [ID!]!) {
+            nodes(ids: $ids) {
+              ... on Product { id title featuredImage { url } }
+              ... on Collection { id title image { url } }
+              ... on ProductVariant {
+                id title image { url }
+                product { id title featuredImage { url } }
+              }
+            }
+          }`,
+          { variables: { ids: chunk } },
+        ),
+      ),
     );
-    if (response.ok) {
+    for (const response of responses) {
+      if (!response.ok) continue;
       const body = (await response.json()) as {
         data?: {
           nodes?: Array<{

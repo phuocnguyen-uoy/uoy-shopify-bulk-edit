@@ -982,11 +982,15 @@ export async function executeQueuedRuns(limit = 10) {
 async function snapshotAll<T>(
   ids: string[],
   load: (chunk: string[]) => Promise<T[]>,
-  chunkSize = 100,
+  chunkSize = 250,
+  concurrency = 3,
 ) {
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += chunkSize) chunks.push(ids.slice(i, i + chunkSize));
   const results: T[] = [];
-  for (let index = 0; index < ids.length; index += chunkSize) {
-    results.push(...(await load(ids.slice(index, index + chunkSize))));
+  for (let i = 0; i < chunks.length; i += concurrency) {
+    const batch = await Promise.all(chunks.slice(i, i + concurrency).map(load));
+    for (const r of batch) results.push(...r);
   }
   return results;
 }
